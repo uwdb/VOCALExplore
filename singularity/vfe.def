@@ -1,0 +1,29 @@
+Bootstrap: docker
+
+From: nvcr.io/nvidia/cuda:11.3.1-base-ubuntu20.04
+
+%files
+    ../requirements.txt requirements.txt
+
+%post
+    apt update && apt -y upgrade && DEBIAN_FRONTEND=noninteractive apt install -y \
+        python3=3.8.2-0ubuntu2 \
+        python3-pip=20.0.2-5ubuntu1.6 \
+        python3-venv=3.8.2-0ubuntu2 \
+        build-essential=12.8ubuntu1.1 \
+        libssl-dev=1.1.1f-1ubuntu2.16 \
+        libffi-dev=3.3-4 \
+        python3-dev=3.8.2-0ubuntu2 \
+        python3-opencv=4.2.0+dfsg-5 \
+        ffmpeg=7:4.2.7-0ubuntu0.1 \
+        git=1:2.25.1-1ubuntu3
+    python3 -m venv /opt/vfe-env && export PATH=/opt/vfe-env/bin:$PATH && echo $(/usr/bin/which python) \
+        && pip install -r requirements.txt && rm requirements.txt
+    pip3 install torch==1.13.1 torchvision==0.14.1 torchaudio==0.13.1 -f https://download.pytorch.org/whl/cu113/torch_stable.html pytorch-lightning==1.6.0 lightning-bolts==0.5.0 torch_tb_profiler
+    pip install --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110
+    # CLIP: https://github.com/openai/CLIP
+    pip install ftfy regex tqdm
+    pip install git+https://github.com/openai/CLIP.git
+
+%environment
+    export PATH=/opt/vfe-env/bin:$PATH
