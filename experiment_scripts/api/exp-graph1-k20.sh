@@ -34,7 +34,7 @@ do
     playbackspeed=10000
     cpus=2
     gpus=2
-    for splitidx in {8..9}
+    for splitidx in {0..9}
     do
         for featurename in "-f r3d_18_ap_mean_stride32_flatten" "-f clip_vitb32_embed_32fstride" "-f mvit_v1_b_16x2_random_stride32_getitem_1" "-f clip_vitb32_embed_16x2maxpool" "-f mvit_v1_b_16x2_stride32_getitem_1"
         do
