@@ -110,3 +110,14 @@ Optimizations:
   --eager-feature-extraction-unlabeled
                         Whether to eagerly schedule feature extraction tasks for unlabeled videos
 ```
+
+# Docker
+Build the dockerfile:
+```
+docker build -t vocalexplore/vocalexplore -f docker/Dockerfile .
+```
+
+Start the docker container in the background:
+```
+./start_docker.sh
+```
