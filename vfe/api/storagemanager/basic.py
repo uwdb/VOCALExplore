@@ -178,6 +178,12 @@ class BasicStorageManager(AbstractStorageManager):
         return self._add_videos(video_csv_path)
 
     def get_video_paths(self, vids) -> Iterable[Tuple[VidType, str]]:
+        if not vids:
+            return self.get_cursor(read_only=True).execute("""
+                SELECT vid, vpath
+                FROM video_metadata
+            """).fetchall()
+
         parameters = ','.join('?' for _ in vids)
         return self.get_cursor(read_only=True).execute("""
             SELECT vid, vpath

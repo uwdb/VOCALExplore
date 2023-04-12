@@ -242,6 +242,10 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return self.featuremanager.add_videos(video_csv_path)
 
     @logtime
+    def get_videos(self, limit=None) -> List[str]:
+        return [vid_path[1] for vid_path in self.videomanager.get_video_paths(vids=None)][:limit]
+
+    @logtime
     def ignore_label_in_predictions(self, label) -> None:
         self.modelmanager.ignore_label_in_predictions(label)
 

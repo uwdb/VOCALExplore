@@ -1,1 +1,7 @@
 __pycache__
+*.parquet
+*.duckdb*
+*.json
+*egg-info
+_fid.txt
+_version.txt
