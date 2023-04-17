@@ -24,9 +24,9 @@ class VOCALExploreService(rpyc.Service):
         self.alm.add_video(video_path, start_time)
 
     @rpyc.exposed
-    def get_videos(self):
+    def get_videos(self, limit=None):
         logger.info('Getting videos')
-        vpaths = self.alm.get_videos()
+        vpaths = self.alm.get_videos(limit=limit)
         return vpaths
 
     @rpyc.exposed
