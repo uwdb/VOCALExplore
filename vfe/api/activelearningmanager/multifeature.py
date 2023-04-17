@@ -244,7 +244,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
     @logtime
     def get_videos(self, limit=None, thumbnails=False) -> List[List[str]]:
-        return [vid_path[1:] for vid_path in self.videomanager.get_video_paths(vids=None, thumbnails=thumbnails)][:limit]
+        return self.videomanager.get_video_paths(vids=None, thumbnails=thumbnails)[:limit]
 
     @logtime
     def ignore_label_in_predictions(self, label) -> None:
@@ -289,9 +289,12 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
     def _update_userinteraction_stats(self):
         now = time.perf_counter()
-        self._t_user.append(now - self._last_user_time)
-        self._last_user_time = now
-        self.logger.debug(f't_user: {self._t_user}')
+        if not self._last_user_time:
+            self._last_user_time = now
+        else:
+            self._t_user.append(now - self._last_user_time)
+            self._last_user_time = now
+            self.logger.debug(f't_user: {self._t_user}')
 
     def _update_modeltrain_start(self, feature_name):
         with self._t_m_lock:

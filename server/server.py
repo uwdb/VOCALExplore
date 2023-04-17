@@ -5,6 +5,7 @@ import rpyc
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 
+from vfe.api.storagemanager import LabelInfo
 from vfe.utils.create_managers import get_alm
 
 logger = logging.getLogger("__name__")
@@ -35,6 +36,17 @@ class VOCALExploreService(rpyc.Service):
         with open(Path(__file__).parent / "example_label.json", "r") as f:
             response = json.load(f)
         return response
+
+    @rpyc.exposed
+    def add_label(self, label_dict):
+        logger.info("Adding label")
+        label_info = LabelInfo(
+            vid=label_dict['vid'],
+            start_time=label_dict['start_time'],
+            end_time=label_dict['end_time'],
+            label=label_dict['label']
+        )
+        self.alm.add_labels([label_info])
 
 
 if __name__ == "__main__":
