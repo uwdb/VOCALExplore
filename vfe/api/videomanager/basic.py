@@ -1,6 +1,6 @@
 from typing import Iterable, Tuple, Union
 
-from vfe.api.storagemanager import AbstractStorageManager, VidType, ClipInfo, ClipInfoWithPath
+from vfe.api.storagemanager import AbstractStorageManager, VidType, ClipInfo, ClipInfoWithPath, LabelInfo
 from .abstract import AbstractVideoManager
 
 class BasicVideoManager(AbstractVideoManager):
@@ -24,3 +24,6 @@ class BasicVideoManager(AbstractVideoManager):
 
     def get_all_vids(self) -> Iterable[VidType]:
         return self.storagemanager.get_all_vids()
+
+    def get_labels(self, vids) -> Iterable[LabelInfo]:
+        return self.storagemanager.get_labels(vids)

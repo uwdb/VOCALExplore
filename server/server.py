@@ -31,11 +31,12 @@ class VOCALExploreService(rpyc.Service):
         return vpaths_and_thumbnails
 
     @rpyc.exposed
-    def get_labels(self):
+    def get_labels(self, vid):
         logger.info("Getting labels")
-        with open(Path(__file__).parent / "example_label.json", "r") as f:
-            response = json.load(f)
-        return response
+        labels = self.alm.get_labels([vid])
+        return {
+            'labels': [label._asdict() for label in labels],
+        }
 
     @rpyc.exposed
     def add_label(self, label_dict):

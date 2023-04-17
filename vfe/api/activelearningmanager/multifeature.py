@@ -384,6 +384,10 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
             if self._should_train_after_label_for_vids(new_vids):
                 self._start_train_model()
 
+    @logtime
+    def get_labels(self, vids) -> Iterable[LabelInfo]:
+        return self.videomanager.get_labels(vids)
+
     def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t):
         clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
         return [align_to_feature(self._features_to_align_to, clip) for clip in clips]
