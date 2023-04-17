@@ -57,6 +57,10 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
     # Set up base objects.
     db_dir, features_dir, models_dir = initialize_environment(ve_options['db_dir'])
 
+    thumbnail_dir = ve_options.get('thumbnail_dir', None)
+    if thumbnail_dir:
+        core.filesystem.create_dir(thumbnail_dir)
+
     sm = StorageManager(db_dir=db_dir, features_dir=features_dir, models_dir=models_dir)
     vm = VideoManager(sm)
     scheduler = PriorityScheduler(cpus=ve_options['cpus'], gpus=ve_options['gpus'], suspend_lowp=ve_options['suspend_lowp'])
@@ -123,5 +127,6 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
         eager_feature_extraction_labeled=ve_options['eager_feature_extraction_labeled'],
         eager_model_training=ve_options['eager_model_training'],
         eager_feature_extraction_unlabeled=eager_feature_extraction_unlabeled,
+        thumbnail_dir=thumbnail_dir,
     )
     return alm

@@ -5,3 +5,4 @@ __pycache__
 *egg-info
 _fid.txt
 _version.txt
+ui_db_dir

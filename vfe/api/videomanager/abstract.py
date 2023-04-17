@@ -9,7 +9,7 @@ class AbstractVideoManager:
     def get_physical_clips_for_expanded_clip(self, clip_info: ClipInfo, total_duration) -> Iterable[ClipInfoWithPath]:
         raise NotImplementedError
 
-    def get_video_paths(self, vids) -> Iterable[Tuple[VidType, str]]:
+    def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str]]:
         raise NotImplementedError
 
     def get_all_vids(self) -> Iterable[VidType]:

@@ -26,8 +26,8 @@ class VOCALExploreService(rpyc.Service):
     @rpyc.exposed
     def get_videos(self, limit=None):
         logger.info('Getting videos')
-        vpaths = self.alm.get_videos(limit=limit)
-        return vpaths
+        vpaths_and_thumbnails = self.alm.get_videos(limit=limit, thumbnails=True)
+        return vpaths_and_thumbnails
 
     @rpyc.exposed
     def get_labels(self):

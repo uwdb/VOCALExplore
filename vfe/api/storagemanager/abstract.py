@@ -51,7 +51,7 @@ class AbstractStorageManager:
         # Expect video_csv_path to have a header of: path,start,duration
         raise NotImplementedError # impl
 
-    def get_video_paths(self, vids) -> Iterable[Tuple[VidType, str]]:
+    def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str, Union[str, None]]]:
         raise NotImplementedError # impl
 
     def add_feature_batch(self, feature_name, vids, starts, ends, feature_vectors) -> None:

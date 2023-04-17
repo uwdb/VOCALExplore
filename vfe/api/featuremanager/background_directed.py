@@ -204,12 +204,13 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         self.logger.info('Resumed')
         self._pause_event.set()
 
-    def add_video(self, path, start_time=None, duration=None) -> VidType:
+    def add_video(self, path, start_time=None, duration=None, thumbnail_dir=None) -> VidType:
         # Don't proactively extract features.
         if duration is None:
             duration = core.video.get_video_duration(path)
+        thumbnail_path = None if not thumbnail_dir else core.video.save_thumbnail(path, thumbnail_dir)
         try:
-            return self.storagemanager.add_video(path, start_time, duration)
+            return self.storagemanager.add_video(path, start_time, duration, thumbnail_path=thumbnail_path)
         except Exception as e:
             self.logger.warn(f'Failed to add video at path {path} with exception {e}')
             return None

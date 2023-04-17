@@ -144,7 +144,7 @@ class FeatureEvalStrategy(Enum):
             assert False, f'Unknown feature eval strategy {self}'
 
 class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
-    def __init__(self, featuremanager: AbstractAsyncFeatureManager, modelmanager: AbstractAsyncModelManager, videomanager: AbstractVideoManager, explorer: AbstractExplorer, feature_names: Iterable[str], scheduler: AbstractScheduler, rng=None, strategy: FeatureEvalStrategy=None, strategy_kwargs: Dict = {}, eager_feature_extraction_labeled=False, eager_model_training=False, eager_feature_extraction_unlabeled=False, explore_label_threshold=-1, return_predictions=True):
+    def __init__(self, featuremanager: AbstractAsyncFeatureManager, modelmanager: AbstractAsyncModelManager, videomanager: AbstractVideoManager, explorer: AbstractExplorer, feature_names: Iterable[str], scheduler: AbstractScheduler, rng=None, strategy: FeatureEvalStrategy=None, strategy_kwargs: Dict = {}, eager_feature_extraction_labeled=False, eager_model_training=False, eager_feature_extraction_unlabeled=False, explore_label_threshold=-1, return_predictions=True, thumbnail_dir=None):
         assert len(feature_names), f'Must specify at least one feature; {feature_names}'
 
         self.featuremanager = featuremanager
@@ -156,6 +156,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         self.scheduler = scheduler
         self.feature_selector: AbstractFeatureSelectionStrategy = strategy.get_selector(strategy_kwargs)
         self.return_predictions = return_predictions
+        self.thumbnail_dir = thumbnail_dir
         self.step = 0
 
         self.feature_to_perf_lock = threading.Lock()
@@ -234,7 +235,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
     @logtime
     def add_video(self, path, start_time=None, duration=None) -> VidType:
-        return self.featuremanager.add_video(path, start_time, duration)
+        return self.featuremanager.add_video(path, start_time, duration, thumbnail_dir=self.thumbnail_dir)
 
     @logtime
     def add_videos(self, video_csv_path) -> Iterable[VidType]:
@@ -242,8 +243,8 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return self.featuremanager.add_videos(video_csv_path)
 
     @logtime
-    def get_videos(self, limit=None) -> List[str]:
-        return [vid_path[1] for vid_path in self.videomanager.get_video_paths(vids=None)][:limit]
+    def get_videos(self, limit=None, thumbnails=False) -> List[List[str]]:
+        return [vid_path[1:] for vid_path in self.videomanager.get_video_paths(vids=None, thumbnails=thumbnails)][:limit]
 
     @logtime
     def ignore_label_in_predictions(self, label) -> None:

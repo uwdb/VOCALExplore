@@ -1,4 +1,4 @@
-from typing import Iterable, Tuple
+from typing import Iterable, Tuple, Union
 
 from vfe.api.storagemanager import AbstractStorageManager, VidType, ClipInfo, ClipInfoWithPath
 from .abstract import AbstractVideoManager
@@ -19,8 +19,8 @@ class BasicVideoManager(AbstractVideoManager):
         end_time = clip_info.end_time + delta
         return self.storagemanager.get_physical_clips_for_clip(ClipInfo(clip_info.vid, clip_info.vstart, start_time, end_time))
 
-    def get_video_paths(self, vids) -> Iterable[Tuple[VidType, str]]:
-        return self.storagemanager.get_video_paths(vids)
+    def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str, Union[str, None]]]:
+        return self.storagemanager.get_video_paths(vids, thumbnails=thumbnails)
 
     def get_all_vids(self) -> Iterable[VidType]:
         return self.storagemanager.get_all_vids()

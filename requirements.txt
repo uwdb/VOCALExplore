@@ -2,7 +2,7 @@ altair
 altair_saver
 debugpy==1.5.1
 disjoint-set==0.7.3
-duckdb==0.5.1
+duckdb==0.7.1
 fastcluster==1.2.4
 ipykernel==6.9.1
 jsonschema==4.16.0 # https://github.com/altair-viz/altair/issues/2767

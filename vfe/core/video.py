@@ -1,8 +1,13 @@
 import cv2
 import fractions
+import logging
+import os
+from pathlib import Path
 import re
 import subprocess
 import shlex
+
+logger = logging.getLogger(__name__)
 
 def get_video_duration(video_path):
     result = subprocess.run(shlex.split(
@@ -16,6 +21,21 @@ def get_video_duration(video_path):
         stderr=subprocess.STDOUT
     )
     return float(result.stdout)
+
+def save_thumbnail(video_path, thumbnail_dir) -> str:
+    thumbnail_path = str(Path(thumbnail_dir) / Path(video_path).with_suffix('.jpg').name)
+    if os.path.exists(thumbnail_path):
+        return thumbnail_path
+
+    cap = cv2.VideoCapture(video_path)
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    try:
+        res, frame = cap.read()
+        cv2.imwrite(thumbnail_path, frame)
+        return thumbnail_path
+    except Exception as e:
+        logger.exception(f'Failed to save thumbnail for {video_path} with error {e}')
+        return None
 
 def get_video_fps_and_nframes(video_path):
     cap = cv2.VideoCapture(video_path)

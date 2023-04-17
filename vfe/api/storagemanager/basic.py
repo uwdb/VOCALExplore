@@ -77,7 +77,8 @@ class BasicStorageManager(AbstractStorageManager):
                 vid INTEGER PRIMARY KEY,
                 vpath VARCHAR UNIQUE,
                 vstart TIMESTAMP,
-                vduration DOUBLE
+                vduration DOUBLE,
+                thumbpath VARCHAR UNIQUE DEFAULT NULL,
             )
         """)
 
@@ -158,38 +159,38 @@ class BasicStorageManager(AbstractStorageManager):
         conn.execute("COMMIT")
         return new_vids - old_vids
 
-    def _add_video(self, video_path, start_time, duration):
-        conn = self.get_cursor()
-        conn.execute("""
+    def _add_video(self, video_path, start_time, duration, thumb_path = None):
+        return self.get_cursor().execute("""
             INSERT INTO video_metadata
-            (vid, vpath, vstart, vduration)
-            VALUES (nextval('vid_seq'), ?, ?, ?)
+            (vid, vpath, vstart, vduration, thumbpath)
+            VALUES (nextval('vid_seq'), ?, ?, ?, ?)
             RETURNING vid as vid
-        """, [video_path, start_time, duration])
-        return conn.execute("SELECT vid FROM video_metadata WHERE vpath=?", [video_path]).fetchall()[0][0]
-        return None # Returning clause doesn't work for some reason.
+        """, [video_path, start_time, duration, thumb_path]).fetchall()[0][0]
 
-    def add_video(self, path, start_time, duration) -> VidType:
+    def add_video(self, path, start_time, duration, thumbnail_path=None) -> VidType:
         if start_time and not isinstance(start_time, str):
             start_time = str(start_time)
-        return self._add_video(path, start_time, duration)
+        return self._add_video(path, start_time, duration, thumbnail_path)
 
     def add_videos(self, video_csv_path) -> Iterable[VidType]:
         return self._add_videos(video_csv_path)
 
-    def get_video_paths(self, vids) -> Iterable[Tuple[VidType, str]]:
+    def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str, Union[str, None]]]:
+        select_str = "SELECT vid, vpath"
+        if thumbnails:
+            select_str += ", thumbpath"
         if not vids:
             return self.get_cursor(read_only=True).execute("""
-                SELECT vid, vpath
+                {select_str}
                 FROM video_metadata
-            """).fetchall()
+            """.format(select_str=select_str)).fetchall()
 
         parameters = ','.join('?' for _ in vids)
         return self.get_cursor(read_only=True).execute("""
-            SELECT vid, vpath
+            {select_str}
             FROM video_metadata
             WHERE vid=ANY([{parameters}])
-        """.format(parameters=parameters), [int(v) for v in vids]).fetchall()
+        """.format(parameters=parameters, select_str=select_str), [int(v) for v in vids]).fetchall()
 
     def _update_label(self, vid, start, end, add_label=None, remove_label=None) -> bool:
         conn = self.get_cursor()
