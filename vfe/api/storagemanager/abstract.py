@@ -10,7 +10,7 @@ LabeledFeatureSet = pa.Table # columns: ['vid', 'labels', 'start_time', 'end_tim
 ClipSet = ds.Scanner # columns ['vid', 'start_time', 'end_time']
 LabeledClipSet = pa.Table # columns: ['vid', 'labels', 'start_time', 'end_time']
 LabelSet = pa.Table # columns ['vid', 'start_time', 'end_time', 'label']
-LabelInfo = namedtuple('LabelInfo', ['vid', 'start_time', 'end_time', 'label']) # Eventually this will need to also handle sub-frame labels.
+LabelInfo = namedtuple('LabelInfo', ['lid', 'vid', 'start_time', 'end_time', 'label']) # Eventually this will need to also handle sub-frame labels.
 ModelInfo = namedtuple('ModelInfo', ['model_type', 'model_path', 'model_labels', 'feature_name', 'f1_threshold', 'mid'], defaults=(None, None,))
 ClipInfo = namedtuple('ClipInfo', ['vid', 'vstart', 'start_time', 'end_time'])
 ClipInfoWithPath = namedtuple('ClipInfoWithPath', [*ClipInfo._fields, 'vpath'])

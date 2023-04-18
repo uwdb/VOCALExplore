@@ -42,12 +42,37 @@ class VOCALExploreService(rpyc.Service):
     def add_label(self, label_dict):
         logger.info("Adding label")
         label_info = LabelInfo(
+            lid=None,
             vid=label_dict['vid'],
             start_time=label_dict['start_time'],
             end_time=label_dict['end_time'],
             label=label_dict['label']
         )
         self.alm.add_labels([label_info])
+
+    @rpyc.exposed
+    def update_label(self, label_dict):
+        logger.info("Updating label")
+        label_info = LabelInfo(
+            lid=label_dict['lid'],
+            vid=label_dict['vid'],
+            start_time=label_dict['start_time'],
+            end_time=label_dict['end_time'],
+            label=label_dict['label'],
+        )
+        self.alm.update_labels([label_info])
+
+    @rpyc.exposed
+    def delete_label(self, label_dict):
+        logger.info(f"Deleting label {label_dict['lid']}")
+        label_info = LabelInfo(
+            lid=label_dict['lid'],
+            vid=label_dict['vid'],
+            start_time=label_dict['start_time'],
+            end_time=label_dict['end_time'],
+            label=label_dict['label'],
+        )
+        self.alm.delete_labels([label_info])
 
 
 if __name__ == "__main__":

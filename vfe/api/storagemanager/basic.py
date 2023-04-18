@@ -74,7 +74,7 @@ class BasicStorageManager(AbstractStorageManager):
         conn.execute("CREATE SEQUENCE IF NOT EXISTS vid_seq")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS video_metadata(
-                vid INTEGER PRIMARY KEY,
+                vid BIGINT PRIMARY KEY,
                 vpath VARCHAR UNIQUE,
                 vstart TIMESTAMP,
                 vduration DOUBLE,
@@ -89,7 +89,7 @@ class BasicStorageManager(AbstractStorageManager):
                 split_type VARCHAR,
                 split_idx UINTEGER,
                 split VARCHAR,
-                vids UINTEGER[],
+                vids BIGINT[],
                 PRIMARY KEY(name, split_type, split_idx, split)
             )
         """)
@@ -98,8 +98,8 @@ class BasicStorageManager(AbstractStorageManager):
         conn.execute("CREATE SEQUENCE IF NOT EXISTS annotation_seq")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS annotations(
-                aid INTEGER DEFAULT(nextval('annotation_seq')),
-                vid integer,
+                aid BIGINT DEFAULT(nextval('annotation_seq')),
+                vid BIGINT,
                 start_time DECIMAL,
                 end_time DECIMAL,
                 label VARCHAR,
@@ -113,7 +113,7 @@ class BasicStorageManager(AbstractStorageManager):
         conn.execute("CREATE SEQUENCE IF NOT EXISTS mid_seq")
         conn.execute("""
             CREATE TABLE IF NOT EXISTS models(
-                mid integer PRIMARY KEY,
+                mid BIGINT PRIMARY KEY,
                 model_type VARCHAR,
                 feature_name VARCHAR,
                 creation_time TIMESTAMP,
@@ -284,6 +284,23 @@ class BasicStorageManager(AbstractStorageManager):
         for label_info in labels:
             self._update_label(label_info.vid, label_info.start_time, label_info.end_time, label_info.label)
 
+    def update_labels(self, labels: Iterable[LabelInfo]) -> None:
+        for label_info in labels:
+            conn = self.get_cursor()
+            conn.execute("""
+                UPDATE annotations
+                SET label=?, start_time=?, end_time=?
+                WHERE aid=?
+            """, [label_info.label, label_info.start_time, label_info.end_time, label_info.lid])
+
+    def delete_labels(self, labels: Iterable[LabelInfo]) -> None:
+        for label_info in labels:
+            conn = self.get_cursor()
+            conn.execute("""
+                DELETE FROM annotations
+                WHERE aid=?
+            """, [label_info.lid])
+
     def remove_label(self, vid, start, end, label) -> bool:
         return self.update_label(vid, start, end, remove_label=label)
 
@@ -329,7 +346,7 @@ class BasicStorageManager(AbstractStorageManager):
         if vids is not None:
             parameters = ','.join('?' for _ in vids)
             base_query = """
-                SELECT vid, start_time, end_time, label
+                SELECT aid, vid, start_time, end_time, label
                 FROM annotations
                 {where_clause}
                     AND vid=ANY([{parameters}])
@@ -337,7 +354,7 @@ class BasicStorageManager(AbstractStorageManager):
             query_parameters.extend(core.typecheck.ensure_list(vids))
         else:
             base_query = """
-                SELECT vid, start_time, end_time, label
+                SELECT aid, vid, start_time, end_time, label
                 FROM ANNOTATIONS
                 {where_clause}
             """.format(where_clause=where_clause)

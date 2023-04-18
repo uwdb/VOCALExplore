@@ -385,6 +385,32 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
                 self._start_train_model()
 
     @logtime
+    def update_labels(self, labels: Iterable[LabelInfo]) -> None:
+        self._update_userinteraction_stats()
+
+        for feature in self.feature_names:
+            self.feature_to_newlabels[feature] = True
+        self.modelmanager.update_labels(labels)
+
+        if self.eager_feature_extraction_labeled:
+            new_vids = set([l.vid for l in labels])
+            self._labeled_vids_missing_features |= new_vids
+            if self._should_train_after_label_for_vids(new_vids):
+                self._start_train_model()
+
+    @logtime
+    def delete_labels(self, labels: Iterable[LabelInfo]) -> None:
+        for feature in self.feature_names:
+            self.feature_to_newlabels[feature] = True
+        self.modelmanager.delete_labels(labels)
+
+        if self.eager_feature_extraction_labeled:
+            new_vids = set([l.vid for l in labels])
+            self._labeled_vids_missing_features |= new_vids
+            if self._should_train_after_label_for_vids(new_vids):
+                self._start_train_model()
+
+    @logtime
     def get_labels(self, vids) -> Iterable[LabelInfo]:
         return self.videomanager.get_labels(vids)
 

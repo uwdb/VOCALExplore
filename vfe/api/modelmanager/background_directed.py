@@ -180,6 +180,18 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
         # Pass through to storage manager.
         self.storagemanager.add_labels(labels)
 
+    def update_labels(self, labels: Iterable[LabelInfo]):
+        self._newlabels = True
+        self._features_trained_on_newlabels = set()
+
+        self.storagemanager.update_labels(labels)
+
+    def delete_labels(self, labels: Iterable[LabelInfo]):
+        self._newlabels = True
+        self._features_trained_on_newlabels = set()
+
+        self.storagemanager.delete_labels(labels)
+
     def get_predictions(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:
         feature_names = core.typecheck.ensure_list(feature_names)
         # len wouldn't work if get_vids_with_labels returned a map rather than a list.
