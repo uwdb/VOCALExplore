@@ -1,3 +1,4 @@
+import datetime
 import json
 import logging
 from pathlib import Path
@@ -5,10 +6,19 @@ import rpyc
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 
+from vfe.api.activelearningmanager import ExploreSet
 from vfe.api.storagemanager import LabelInfo
 from vfe.utils.create_managers import get_alm
 
-logger = logging.getLogger("__name__")
+logger = logging.getLogger(__name__)
+
+
+class CustomEncoder(json.JSONEncoder):
+    def default(self, obj):
+        if isinstance(obj, datetime.datetime):
+            return str(obj)
+        return json.JSONEncoder.default(self, obj)
+
 
 @rpyc.service
 class VOCALExploreService(rpyc.Service):
@@ -29,6 +39,18 @@ class VOCALExploreService(rpyc.Service):
         logger.info('Getting videos')
         vpaths_and_thumbnails = self.alm.get_videos(limit=limit, thumbnails=True)
         return vpaths_and_thumbnails
+
+    @rpyc.exposed
+    def explore(self, B, t, label=None):
+        logger.info('Explore')
+        clips: ExploreSet = self.alm.explore(B, t, label=label)
+        return json.dumps({
+            'explore_clips': [ci._asdict() for ci in clips.explore_clips],
+            'context_clips': [[cip._asdict() for cip in context] for context in clips.context_clips],
+            'explore_predictions': [[ps._asdict() for ps in preds] for preds in clips.explore_predictions],
+            'context_predictions': [[[ps._asdict() for ps in preds] for preds in context] for context in clips.context_predictions],
+            'prediction_feature_names': clips.prediction_feature_names,
+        }, cls=CustomEncoder)
 
     @rpyc.exposed
     def get_labels(self, vid):

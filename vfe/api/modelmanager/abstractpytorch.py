@@ -335,7 +335,8 @@ class AbstractPytorchModelManager(AbstractModelManager):
         def model_info_lambda():
             feature_name = core.typecheck.ensure_str(feature_names)
             model_info = self.storagemanager.get_model_info(feature_name=feature_name, ignore_labels=self.ignore_labels)
-            self._feature_to_last_prediction_mid[feature_name] = model_info.mid
+            if model_info:
+                self._feature_to_last_prediction_mid[feature_name] = model_info.mid
             return model_info
 
         return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority)

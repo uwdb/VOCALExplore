@@ -98,7 +98,7 @@ def align_to_feature(feature_names: List[str], clip: ClipInfoWithPath):
 
     # Push out clip_start, clip_end by a fraction of a second to ensure the clip completely covers a feature
     # despite rounding errors.
-    return ClipInfoWithPath(clip.vid, clip.vstart, max(0, clip_start - 0.01), clip_end + 0.01, clip.vpath)
+    return ClipInfoWithPath(clip.vid, clip.vstart, max(0, clip_start - 0.01), clip_end + 0.01, clip.vpath, clip.thumbpath)
 
 if __name__ == '__main__':
     subclips = [

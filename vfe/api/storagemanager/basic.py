@@ -535,9 +535,9 @@ class BasicStorageManager(AbstractStorageManager):
 
         if vstart is None:
             start = max(0, clip_info.start_time)
-            video_duration, vpath = self.get_cursor(read_only=True).execute("SELECT vduration, vpath FROM video_metadata WHERE vid=?", [clip_info.vid]).fetchall()[0]
+            video_duration, vpath, thumbpath = self.get_cursor(read_only=True).execute("SELECT vduration, vpath, thumbpath FROM video_metadata WHERE vid=?", [clip_info.vid]).fetchall()[0]
             end = min(video_duration, clip_info.end_time)
-            returnvals= [ClipInfoWithPath(clip_info.vid, vstart, start, end, vpath)]
+            returnvals= [ClipInfoWithPath(clip_info.vid, vstart, start, end, vpath, thumbpath)]
         else:
             realtime_start = add_delta(vstart, clip_info.start_time)
             realtime_end = add_delta(vstart, clip_info.end_time)
@@ -552,7 +552,8 @@ class BasicStorageManager(AbstractStorageManager):
                 vstart,
                 CASE WHEN vstart > start_timestamp THEN 0 ELSE DATE_SUB('milliseconds', vstart, start_timestamp) / 1000.0 END AS clip_start,
                 CASE WHEN vstart + TO_SECONDS(CAST(vduration AS BIGINT)) < end_timestamp THEN vduration ELSE DATE_SUB('milliseconds', vstart, end_timestamp) / 1000.0 END AS clip_end,
-                vpath
+                vpath,
+                thumbpath
             FROM video_metadata, (
                 SELECT CAST('{start}' AS TIMESTAMP) AS start_timestamp,
                     CAST('{end}' AS TIMESTAMP) AS end_timestamp

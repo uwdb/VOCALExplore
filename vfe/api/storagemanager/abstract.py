@@ -13,7 +13,7 @@ LabelSet = pa.Table # columns ['vid', 'start_time', 'end_time', 'label']
 LabelInfo = namedtuple('LabelInfo', ['lid', 'vid', 'start_time', 'end_time', 'label']) # Eventually this will need to also handle sub-frame labels.
 ModelInfo = namedtuple('ModelInfo', ['model_type', 'model_path', 'model_labels', 'feature_name', 'f1_threshold', 'mid'], defaults=(None, None,))
 ClipInfo = namedtuple('ClipInfo', ['vid', 'vstart', 'start_time', 'end_time'])
-ClipInfoWithPath = namedtuple('ClipInfoWithPath', [*ClipInfo._fields, 'vpath'])
+ClipInfoWithPath = namedtuple('ClipInfoWithPath', [*ClipInfo._fields, 'vpath', 'thumbpath'], defaults=(None,))
 AnyClipInfo = Union[ClipInfo, ClipInfoWithPath, LabelInfo] # Anything with values for vid, start_time, end_time.
 
 def clipinfo_to_clipset(clipinfos: Iterable[AnyClipInfo]) -> ClipSet:

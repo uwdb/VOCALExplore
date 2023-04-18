@@ -215,6 +215,8 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
             self._features_trained_on_newlabels.add(feature_names_str)
 
         predictions = do_predict()
+        if not predictions:
+            return []
         # Keep trying to get predictions until we have a model that can predict all known classes (minus ignored ones).
         # while True:
         #     # predictions will be None if there isn't an existing model.

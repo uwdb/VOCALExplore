@@ -7,7 +7,7 @@ class ExploreSet(NamedTuple):
     explore_clips: Iterable[ClipInfo]
     context_clips: Iterable[Iterable[ClipInfoWithPath]]
     explore_predictions: Iterable[Iterable[PredictionSet]]
-    context_predictions: Iterable[Iterable[PredictionSet]]
+    context_predictions: Iterable[Iterable[Iterable[PredictionSet]]]
     prediction_feature_names: List[str]
 
 class AbstractActiveLearningManager:
