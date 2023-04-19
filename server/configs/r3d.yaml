@@ -1,6 +1,6 @@
 vocalexplore:
-  db_dir: /home/maureen/VOCALExplore/ui_db_dir
-  thumbnail_dir: /home/maureen/VOCALExplore/ui_db_dir/thumbnails
+  db_dir: null
+  thumbnail_dir: null
   feature_names:
     - r3d_18_ap_mean_stride32_flatten
   ignore_labels:

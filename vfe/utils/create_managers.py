@@ -54,6 +54,11 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
     options = load_options(config_path)
     ve_options = options['vocalexplore']
 
+    has_db_dir = ve_options['db_dir']
+    has_thumbnail_dir = ve_options['thumbnail_dir']
+    if not has_db_dir or not has_thumbnail_dir:
+        raise RuntimeError(f'Both db_dir and thumbnail_dir must be specified in configuration file ({config_path})')
+
     # Set up base objects.
     db_dir, features_dir, models_dir = initialize_environment(ve_options['db_dir'])
 

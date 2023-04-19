@@ -1,3 +1,4 @@
+import argparse
 import datetime
 import json
 import logging
@@ -101,7 +102,11 @@ class VOCALExploreService(rpyc.Service):
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
 
-    config_path = '/home/maureen/VOCALExplore/server/configs/r3d.yaml'
+    ap = argparse.ArgumentParser()
+    ap.add_argument('-c', '--config-path', default='/home/maureen/VOCALExplore/server/configs/r3d.yaml')
+    args = ap.parse_args()
+
+    config_path = args.config_path
     # service = classpartial(VOCALExploreService, config_path=config_path)
     service = VOCALExploreService(config_path=config_path)
     t = ThreadedServer(

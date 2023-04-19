@@ -135,3 +135,16 @@ Args:
   -e <path to env file>, or default .env
   -n <docker container name>, or default vocalexplore
 ```
+
+# Server
+The server can be started by running
+```
+python server/server.py
+
+Arguments:
+  -c/--config-file <path to config file>
+```
+
+Sample config files can be found in `server/configs`.
+The `db_dir` is the directory where VOCALExplore's storage manager will store its data.
+If `thumbnail_dir` is specified, VOCALExplore will extract thumbnail images from loaded videos and store them in this directory.
