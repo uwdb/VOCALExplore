@@ -117,7 +117,21 @@ Build the dockerfile:
 docker build -t vocalexplore/vocalexplore -f docker/Dockerfile .
 ```
 
+Copy `.env` and modify any ports or paths. Pass this env file to `start_docker` below.
+**Make sure that the thumbnail directory matches the directory that will be specified in the server's configuration yaml file.**
+- `SERVER_PORT`: The port that the server will be available on.
+- `THUMBNAIL_DIR`: The directory where thumbnails will stored.
+- `THUMBNAIL_PORT`: The port where thumbnails can be accessed.
+- `VIDEO_DIR`: The directory where videos are stored.
+- `VIDEO_PORT`: The port where videos can be accessed.
+
+When running the frontend, copy the contents of `.env` into `config.py`.
+
 Start the docker container in the background:
 ```
 ./start_docker.sh
+
+Args:
+  -e <path to env file>, or default .env
+  -n <docker container name>, or default vocalexplore
 ```

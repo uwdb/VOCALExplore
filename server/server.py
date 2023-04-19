@@ -1,6 +1,7 @@
 import datetime
 import json
 import logging
+import os
 from pathlib import Path
 import rpyc
 from rpyc.utils.helpers import classpartial
@@ -105,7 +106,7 @@ if __name__ == "__main__":
     service = VOCALExploreService(config_path=config_path)
     t = ThreadedServer(
         service,
-        port=8890,
+        port=os.environ.get('SERVER_PORT', 8890),
         protocol_config={
             "allow_public_attrs": True,
         }

@@ -4,13 +4,14 @@ RUN apt update && apt -y upgrade && DEBIAN_FRONTEND=noninteractive apt install -
         python3=3.8.2-0ubuntu2 \
         python3-pip \
         python3-venv=3.8.2-0ubuntu2 \
-        build-essential=12.8ubuntu1.1 \
+        build-essential \
         libssl-dev \
-        libffi-dev=3.3-4 \
+        libffi-dev \
         python3-dev=3.8.2-0ubuntu2 \
-        python3-opencv=4.2.0+dfsg-5 \
-        ffmpeg=7:4.2.7-0ubuntu0.1 \
-        git=1:2.25.1-1ubuntu3
+        python3-opencv \
+        ffmpeg \
+        git \
+        npm
 
 ENV VIRTUAL_ENV=/opt/venv
 RUN python3 -m venv /opt/vfe-env
@@ -25,7 +26,8 @@ RUN pip install --no-cache-dir -r requirements.txt && rm requirements.txt \
  && pip install --no-cache-dir --extra-index-url https://developer.download.nvidia.com/compute/redist --upgrade nvidia-dali-cuda110 \
  && pip install --no-cache-dir ftfy regex tqdm \
  && pip install --no-cache-dir git+https://github.com/openai/CLIP.git \
- && python3 setup.py develop
+ && python3 setup.py develop \
+ && npm install --global http-server
 
 ENV NVIDIA_VISIBLE_DEVICES all
 ENV NVIDIA_DRIVER_CAPABILITIES compute,video,utility

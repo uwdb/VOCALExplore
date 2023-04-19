@@ -1,5 +1,8 @@
 #!/bin/bash
 
-pip3 install rpyc
 python3 setup.py develop
+
+./start_thumbnail_server.sh &
+./start_video_server.sh &
+
 /bin/bash
