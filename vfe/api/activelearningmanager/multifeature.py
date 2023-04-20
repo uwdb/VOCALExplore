@@ -381,8 +381,8 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         if self.eager_feature_extraction_labeled:
             new_vids = set([l.vid for l in labels])
             self._labeled_vids_missing_features |= new_vids
-            if self._should_train_after_label_for_vids(new_vids):
-                self._start_train_model()
+            # if self._should_train_after_label_for_vids(new_vids):
+            #     self._start_train_model()
 
     @logtime
     def update_labels(self, labels: Iterable[LabelInfo]) -> None:
@@ -412,6 +412,8 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
     @logtime
     def get_labels(self, vids) -> Iterable[LabelInfo]:
+        if self._should_train_after_label_for_vids(set(vids)):
+            self._start_train_model()
         return self.videomanager.get_labels(vids)
 
     def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t):

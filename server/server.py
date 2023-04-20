@@ -10,6 +10,7 @@ from rpyc.utils.server import ThreadedServer
 
 from vfe.api.activelearningmanager import ExploreSet
 from vfe.api.storagemanager import LabelInfo
+from vfe import core
 from vfe.utils.create_managers import get_alm
 
 logger = logging.getLogger(__name__)
@@ -100,7 +101,7 @@ class VOCALExploreService(rpyc.Service):
 
 
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
+    core.logging.configure_logger()
 
     ap = argparse.ArgumentParser()
     ap.add_argument('-c', '--config-path', default='/home/maureen/VOCALExplore/server/configs/r3d.yaml')

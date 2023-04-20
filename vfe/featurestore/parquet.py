@@ -136,7 +136,7 @@ class ParquetFeatureStore(AbstractFeatureStore):
                 self._close_writer_if_necessary(feature_name)
 
     def feature_dir(self, feature_name):
-        self.logger.debug(f'Reading features from {os.path.join(self.base_dir, feature_name)}')
+        # self.logger.debug(f'Reading features from {os.path.join(self.base_dir, feature_name)}')
         return os.path.join(self.base_dir, feature_name)
 
     def _validate_feature_name(self, feature_name):
