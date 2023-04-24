@@ -324,6 +324,11 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self.logger.debug(f'Prepared datasets')
         y_pred_probs = torch.stack(trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0))).squeeze()
         self.logger.debug('Got predictions')
+
+        # TODO: read saved predictions and only run the model to get predictions on new videos.
+        self.logger.debug(f'Saving predictions for model {model_info.mid}')
+        self.storagemanager.add_predictions(model_info.mid, self._probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features))
+
         return y_pred_probs, model_info.model_labels, filtered_features
 
     def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:

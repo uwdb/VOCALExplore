@@ -128,6 +128,20 @@ class BasicStorageManager(AbstractStorageManager):
             )
         """)
 
+        # predictions table.
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS predictions(
+                mid BIGINT,
+                vid BIGINT,
+                start_time DECIMAL,
+                end_time DECIMAL,
+                label VARCHAR,
+                probability DECIMAL,
+                FOREIGN KEY (mid) REFERENCES models(mid),
+                FOREIGN KEY (vid) REFERENCES video_metadata(vid)
+            )
+        """)
+
     def _add_videos(self, video_csv_path):
         conn = self.get_cursor()
 
@@ -577,3 +591,19 @@ class BasicStorageManager(AbstractStorageManager):
             ORDER BY vstart
         """.format(start=realtime_start, end=realtime_end)).fetchall()
         return map(ClipInfoWithPath._make, results)
+
+    def add_predictions(self, mid, predictionset_list):
+        # predictionset: (vid, start_time, end_time, predictions {label: prob,})
+        query = """
+            INSERT INTO predictions
+                (mid, vid, start_time, end_time, label, probability)
+            VALUES {values}
+        """
+        parameters = []
+        values = []
+        for predictionset in predictionset_list:
+            for label, probability in predictionset.predictions.items():
+                values.append('(?, ?, ?, ?, ?, ?)')
+                parameters.extend([mid, predictionset.vid, predictionset.start_time, predictionset.end_time, label, probability])
+        values = ','.join(values)
+        self.get_cursor().execute(query.format(values=values), parameters)
