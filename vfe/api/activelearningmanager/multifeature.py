@@ -204,6 +204,9 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         # Track the number of outstanding vids where model training should be started.
         self._start_modeltrain_cutoff = -1
 
+        # Track whether a model was trained during the last Explore iteration.
+        self._trained_model_for_iteration = False
+
     def _sample_vids_to_extract(self):
         # Wait one second after startup to let more important tasks get scheduled if necessary.
         time.sleep(1)
@@ -335,6 +338,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return len(self._outstanding_explore_vids) == self._start_modeltrain_cutoff
 
     def _start_train_model(self):
+        self._trained_model_for_iteration = True
         def _model_callback(feature_name):
             # This assumes that there is one model training task per-feature at a time.
             now = time.perf_counter()
@@ -497,8 +501,10 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
         # Special case: training takes longer than the expected duration of an iteration.
         # Start training now on labels collected during the past iteration.
-        if self._start_modeltrain_cutoff == -1:
+        if self._start_modeltrain_cutoff == -1 or not self._trained_model_for_iteration:
             self._start_train_model()
+
+        self._trained_model_for_iteration = False
 
         return ExploreSet(clips, explore_clips, clip_predictions, explore_predictions, feature_names)
 

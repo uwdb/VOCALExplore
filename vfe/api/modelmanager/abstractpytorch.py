@@ -196,6 +196,10 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
     def _get_all_labels_and_features(self, feature_names: Union[str, List[str]], vids=None, only_already_extracted=False):
         all_labels = list(self.storagemanager.get_labels(vids=vids, ignore_labels=self.ignore_labels))
+
+        if not all_labels:
+            return [], set()
+
         labelset = clipinfo_to_clipset(all_labels)
         labeled_features = self.featuremanager.get_features_for_clips(feature_names, labelset, only_already_extracted=only_already_extracted)
         labels_and_features = self.storagemanager.get_labels_for_features(labeled_features, ignore_labels=self.ignore_labels)
