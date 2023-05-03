@@ -10,6 +10,9 @@ class BasicVideoManager(AbstractVideoManager):
     def get_clip_splits(self, vids, clip_duration) -> Iterable[ClipInfo]:
         return self.storagemanager.get_clip_splits(vids, clip_duration)
 
+    def get_clipinfo_with_path(self, vid: VidType) -> ClipInfoWithPath:
+        return self.storagemanager.get_clipinfo_with_path(vid)
+
     def get_physical_clips_for_expanded_clip(self, clip_info: ClipInfo, total_duration) -> Iterable[ClipInfoWithPath]:
         missing_duration = total_duration - (clip_info.end_time - clip_info.start_time)
         # If missing_duration is negative, the clip is already at least as long as total_duration.

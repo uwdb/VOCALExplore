@@ -421,7 +421,8 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return self.videomanager.get_labels(vids)
 
     def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t):
-        clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
+        # clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
+        clips = [self.videomanager.get_clipinfo_with_path(clip.vid)]
         return [align_to_feature(self._features_to_align_to, clip) for clip in clips]
 
     def _predict_clips(self, feature_names: List[str], clips: Iterable[ClipInfo], partial_overlap=True):

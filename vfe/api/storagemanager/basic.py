@@ -545,6 +545,13 @@ class BasicStorageManager(AbstractStorageManager):
         returnvals = list(returnvals)
         return returnvals
 
+    def get_clipinfo_with_path(self, vid: VidType) -> ClipInfoWithPath:
+        vstart, duration, vpath, thumbpath = self.get_cursor(read_only=True).execute(
+            "SELECT vstart, vduration, vpath, thumbpath FROM video_metadata WHERE vid=?",
+            [vid]
+        ).fetchall()[0]
+        return ClipInfoWithPath(vid, vstart, 0, duration, vpath, thumbpath)
+
     def get_clips_for_timespan(self, realtime_start, realtime_end) -> Iterable[ClipInfoWithPath]:
         # Not ideal to format string, but it's a read-only query and it's cleaner.
         results = self.get_cursor(read_only=True).execute("""
