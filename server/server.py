@@ -59,9 +59,19 @@ class VOCALExploreService(rpyc.Service):
     def get_labels(self, vid):
         logger.info("Getting labels")
         labels = self.alm.get_labels([vid])
+
+        print([label._asdict() for label in labels], flush=True)
         return {
             'labels': [label._asdict() for label in labels],
         }
+    
+    @rpyc.exposed
+    def get_all_labels(self):
+        logger.info("Getting all labels")
+        return {
+            'labels': ["Running", "Walking", "Sleeping", "Eating"],
+        }
+
 
     @rpyc.exposed
     def add_label(self, label_dict):
