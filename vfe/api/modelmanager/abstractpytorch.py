@@ -1,6 +1,7 @@
 import datetime
 import duckdb
 import functools
+import json
 import logging
 import numpy as np
 import pandas as pd
@@ -308,27 +309,57 @@ class AbstractPytorchModelManager(AbstractModelManager):
         assert model_info.feature_name == tosave_feature_name, f'Error trying to use model trained with feature {model_info.feature_name} when specified feature {tosave_feature_name}'
         self.logger.debug(f'Performing predictions using model ({model_info.mid}) at path {model_info.model_path}, predicts labels {model_info.model_labels}, f1 threshold {model_info.f1_threshold:0.2f}')
 
-        model = models.ModelType(model_info.model_type).get_cls().load_from_checkpoint(model_info.model_path)
-        self.logger.debug(f'Loaded model')
-        trainer = pl.Trainer(
-            accelerator=self.device,
-            devices=1,
-            max_epochs=-1, # Not used since we're not training, but if not specified a warning is printed.
-            enable_progress_bar=False,
-            logger=False,
-        )
-        pt_dataset = data.TensorDataset(
-            torch.from_numpy(np.vstack(filtered_features['feature'].to_numpy())),
-            torch.from_numpy(np.ones((len(filtered_features), 1))),
-        )
-        self.logger.debug(f'Prepared datasets')
-        y_pred_probs = torch.stack(trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0))).squeeze()
-        self.logger.debug('Got predictions')
+        existing_predictions = self.storagemanager.get_predictions(model_info.mid, filtered_features)
+        # Create two subsets:
+        # One without predictions that is run through the model.
+        # One with predictions that we will transform into the expected types.
+        # Concat these before returning.
+        missing_predictions = pc.is_null(existing_predictions['pred_dict'])
+        filtered_features_for_inference = existing_predictions.filter(missing_predictions)
+        filtered_features_with_predictions = existing_predictions.filter(pc.invert(missing_predictions))
 
-        # TODO: read saved predictions and only run the model to get predictions on new videos.
-        self.logger.debug(f'Saving predictions for model {model_info.mid}')
-        self.storagemanager.add_predictions(model_info.mid, self._probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features))
+        if len(filtered_features_for_inference):
+            model = models.ModelType(model_info.model_type).get_cls().load_from_checkpoint(model_info.model_path)
+            self.logger.debug(f'Loaded model')
+            trainer = pl.Trainer(
+                accelerator=self.device,
+                devices=1,
+                max_epochs=-1, # Not used since we're not training, but if not specified a warning is printed.
+                enable_progress_bar=False,
+                logger=False,
+            )
+            pt_dataset = data.TensorDataset(
+                torch.from_numpy(np.vstack(filtered_features_for_inference['feature'].to_numpy())),
+                torch.from_numpy(np.ones((len(filtered_features_for_inference), 1))),
+            )
+            self.logger.debug(f'Prepared datasets')
+            y_pred_probs = torch.stack(trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0)))
+            if len(y_pred_probs.size()) > 2:
+                y_pred_probs = y_pred_probs.squeeze()
+            self.logger.debug('Got predictions')
 
+            # TODO: read saved predictions and only run the model to get predictions on new videos.
+            self.logger.debug(f'Saving predictions for model {model_info.mid}')
+            self.storagemanager.add_predictions(model_info.mid, self._probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
+        else:
+            y_pred_probs = None
+
+        # Concatenate y_pred_probs with filtered_features_with_predictions.
+        if len(filtered_features_with_predictions):
+            predictions = [json.loads(preds) for preds in filtered_features_with_predictions['pred_dict'].to_pylist()]
+            y_pred_probs_existing = torch.stack([torch.Tensor([pred[label] for label in model_info.model_labels]) for pred in predictions])
+            if len(y_pred_probs_existing.size()) > 2:
+                y_pred_probs_existing = y_pred_probs_existing.squeeze()
+
+            if y_pred_probs is not None:
+                y_pred_probs = torch.cat([y_pred_probs, y_pred_probs_existing])
+            else:
+                y_pred_probs = y_pred_probs_existing
+            filtered_features = pa.concat_tables([filtered_features_for_inference, filtered_features_with_predictions])
+        else:
+            filtered_features = filtered_features_for_inference
+
+        # Now we're returning filtered_features with an extra 'pred_dict' column, but I think all of the callers will just ignore it.
         return y_pred_probs, model_info.model_labels, filtered_features
 
     def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:

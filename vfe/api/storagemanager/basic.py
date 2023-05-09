@@ -141,6 +141,9 @@ class BasicStorageManager(AbstractStorageManager):
                 FOREIGN KEY (vid) REFERENCES video_metadata(vid)
             )
         """)
+        conn.execute("""
+            create unique index if not exists predictions_unique on predictions(mid, vid, start_time, end_time, label, probability)
+        """)
 
     def _add_videos(self, video_csv_path):
         conn = self.get_cursor()
@@ -604,6 +607,28 @@ class BasicStorageManager(AbstractStorageManager):
         for predictionset in predictionset_list:
             for label, probability in predictionset.predictions.items():
                 values.append('(?, ?, ?, ?, ?, ?)')
-                parameters.extend([mid, predictionset.vid, predictionset.start_time, predictionset.end_time, label, probability])
+                vals = (mid, predictionset.vid, predictionset.start_time, predictionset.end_time, label, probability)
+                parameters.extend(vals)
+
         values = ','.join(values)
         self.get_cursor().execute(query.format(values=values), parameters)
+
+
+    def get_predictions(self, mid, labels_and_features):
+        conn = self.get_cursor(read_only=True)
+        # select * exclude (row_number) from (select *, row_number() over (partition by mid, vid, start_time, end_time, label, probability) as row_number from predictions) where row_number=1
+        return conn.execute("""
+            WITH unique_preds AS (
+                select * exclude (row_number) from (select *, row_number() over (partition by mid, vid, start_time, end_time, label, probability) as row_number from predictions) where row_number=1
+            ), grouped_preds AS (
+                select mid, vid, start_time, end_time, map(list(label), list(probability)) as pred_dict from unique_preds group by mid, vid, start_time, end_time
+            )
+            SELECT f.*,
+                to_json(p.pred_dict) as pred_dict
+            FROM labels_and_features f
+            LEFT OUTER JOIN grouped_preds p
+            ON p.mid=?
+                AND f.vid=p.vid
+                AND f.start_time::DECIMAL(18,3)=p.start_time::DECIMAL(18,3)
+                AND f.end_time::DECIMAL(18,3)=p.end_time::DECIMAL(18,3)
+        """, [mid]).arrow()
