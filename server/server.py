@@ -68,10 +68,7 @@ class VOCALExploreService(rpyc.Service):
     @rpyc.exposed
     def get_all_labels(self):
         logger.info("Getting all labels")
-        return {
-            'labels': ["Running", "Walking", "Sleeping", "Eating"],
-        }
-
+        return self.alm.get_unique_labels()
 
     @rpyc.exposed
     def add_label(self, label_dict):

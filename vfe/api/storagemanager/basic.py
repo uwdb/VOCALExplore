@@ -400,6 +400,12 @@ class BasicStorageManager(AbstractStorageManager):
         conn = self.get_cursor(read_only=True)
         return self.featurestore.get_label_counts(feature_names=feature_names, dbcon=conn)
 
+    def get_unique_labels(self) -> Iterable[str]:
+        rows = self.get_cursor(read_only=True).execute("""
+            SELECT DISTINCT label FROM annotations
+        """).fetchall()
+        return [row[0] for row in rows]
+
     def get_total_label_time(self) -> Dict[str, float]:
         conn = self.get_cursor(read_only=True)
         label_dur = conn.execute("""

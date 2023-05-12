@@ -420,6 +420,10 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
             self._start_train_model()
         return self.videomanager.get_labels(vids)
 
+    @logtime
+    def get_unique_labels(self) -> Iterable[str]:
+        return self.videomanager.get_unique_labels()
+
     def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t):
         # clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
         clips = [self.videomanager.get_clipinfo_with_path(clip.vid)]

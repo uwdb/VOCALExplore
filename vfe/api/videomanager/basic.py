@@ -30,3 +30,6 @@ class BasicVideoManager(AbstractVideoManager):
 
     def get_labels(self, vids) -> Iterable[LabelInfo]:
         return self.storagemanager.get_labels(vids)
+
+    def get_unique_labels(self) -> Iterable[str]:
+        return self.storagemanager.get_unique_labels()
