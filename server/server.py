@@ -106,6 +106,11 @@ class VOCALExploreService(rpyc.Service):
         )
         self.alm.delete_labels([label_info])
 
+    @rpyc.exposed
+    def debug_reset_annotations(self):
+        logger.info("Resetting annotations")
+        self.alm.videomanager.reset_annotations()
+
 
 if __name__ == "__main__":
     core.logging.configure_logger()

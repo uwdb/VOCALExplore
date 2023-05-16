@@ -33,3 +33,7 @@ class BasicVideoManager(AbstractVideoManager):
 
     def get_unique_labels(self) -> Iterable[str]:
         return self.storagemanager.get_unique_labels()
+
+    def reset_annotations(self):
+        # Intended for debugging only.
+        self.storagemanager.reset_annotations()

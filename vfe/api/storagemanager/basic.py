@@ -632,3 +632,10 @@ class BasicStorageManager(AbstractStorageManager):
                 AND f.start_time::DECIMAL(18,3)=p.start_time::DECIMAL(18,3)
                 AND f.end_time::DECIMAL(18,3)=p.end_time::DECIMAL(18,3)
         """, [mid]).arrow()
+
+    def reset_annotations(self):
+        # Intended for debugging only.
+        conn = self.get_cursor()
+        conn.execute("truncate table predictions")
+        conn.execute("truncate table models")
+        conn.commit()
