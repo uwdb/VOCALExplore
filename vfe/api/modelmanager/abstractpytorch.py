@@ -22,6 +22,8 @@ from vfe.api.scheduler import Priority
 from vfe.api.storagemanager import AbstractStorageManager, ModelInfo, LabelInfo, clipinfo_to_clipset, ClipSet, VidType
 from .abstract import AbstractModelManager, PredictionSet
 
+logger = logging.getLogger(__name__)
+
 def _warn_for_unlabeled(logger, y, caller):
     n_notlabeled = len(np.where(y == 'none')[0])
     if n_notlabeled:
@@ -42,7 +44,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self.featuremanager = featuremanager
         self.device = device if device is not None else \
             'cuda' if torch.cuda.is_available() else 'cpu'
-        self.logger = logging.getLogger(__name__)
+        self.logger = logger
         self.random_state = np.random.RandomState(random_state)
         self.deterministic = deterministic
         self.seed = random_state
@@ -229,50 +231,55 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
     @staticmethod
     def _train_model_for_features_and_labels_base(feature_names: Union[str, List[str]], labels_and_features, unique_labels, model_id, outdir, model_type, batch_size, learningrate, epochs, device, deterministic, seed, tensorboard=False, autolr=False, **train_kwargs):
-        feature_names = core.typecheck.ensure_list(feature_names)
-        # Train model.
-        creation_time = datetime.datetime.today()
-        model_name = str(creation_time).replace(' ', '-').replace(':', '-').replace('.', '-')
-        if model_id:
-            model_name = f'{model_id}_{model_name}'
-        training_info = models.BaseTrainingInfo(model_name, label_col='', train_split='', eval_split='', feature=core.typecheck.ensure_str(feature_names))
-        outdir = outdir
-        trainer = models.AbstractStrategy(
-            outdir=outdir,
-            training_info=training_info,
-            model=model_type,
-            save_models=True,
-            batch_size=batch_size,
-            learning_rate=learningrate,
-            epochs=epochs,
-            budgets=[],
-            deterministic=deterministic,
-            seed=seed,
-            tensorboard=tensorboard,
-            autolr=autolr,
-        )
-        X = np.vstack(labels_and_features['feature'].to_numpy())
-        y = labels_and_features['labels'].to_numpy()
-        training_output = trainer.train_pytorch_model(
-            X,
-            y,
-            unique_labels,
-            device,
-            **train_kwargs
-        )
-        return dict(
-            model_type = model_type.value,
-            feature_name=core.typecheck.ensure_str(feature_names),
-            creation_time = creation_time,
-            batch_size = batch_size,
-            epochs = epochs,
-            learningrate = learningrate,
-            ntrain = len(labels_and_features),
-            labels = training_output.labels.tolist(),
-            model_path = training_output.ckpt_outfile,
-            labels_path = training_output.classes_file,
-            f1_threshold = training_output.f1_threshold,
-        )
+        try:
+            feature_names = core.typecheck.ensure_list(feature_names)
+            # Train model.
+            creation_time = datetime.datetime.today()
+            model_name = str(creation_time).replace(' ', '-').replace(':', '-').replace('.', '-')
+            if model_id:
+                model_name = f'{model_id}_{model_name}'
+            training_info = models.BaseTrainingInfo(model_name, label_col='', train_split='', eval_split='', feature=core.typecheck.ensure_str(feature_names))
+            outdir = outdir
+            trainer = models.AbstractStrategy(
+                outdir=outdir,
+                training_info=training_info,
+                model=model_type,
+                save_models=True,
+                batch_size=batch_size,
+                learning_rate=learningrate,
+                epochs=epochs,
+                budgets=[],
+                deterministic=deterministic,
+                seed=seed,
+                tensorboard=tensorboard,
+                autolr=autolr,
+            )
+            X = np.vstack(labels_and_features['feature'].to_numpy())
+            y = labels_and_features['labels'].to_numpy()
+            training_output = trainer.train_pytorch_model(
+                X,
+                y,
+                unique_labels,
+                device,
+                **train_kwargs
+            )
+            return dict(
+                model_type = model_type.value,
+                feature_name=core.typecheck.ensure_str(feature_names),
+                creation_time = creation_time,
+                batch_size = batch_size,
+                epochs = epochs,
+                learningrate = learningrate,
+                ntrain = len(labels_and_features),
+                labels = training_output.labels.tolist(),
+                model_path = training_output.ckpt_outfile,
+                labels_path = training_output.classes_file,
+                f1_threshold = training_output.f1_threshold,
+            )
+        except Exception as e:
+            logger.exception(f'Failed to train model: {e}')
+            return None
+        
 
     def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT):
         if vids is not None:

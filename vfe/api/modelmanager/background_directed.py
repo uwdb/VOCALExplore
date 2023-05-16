@@ -48,8 +48,9 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
     # TODO: for this to actually be async, we should extract_features_async first then train the model in the callback.
     def train_model_async(self, feature_names: Union[str, List[str]], callback=None, priority=Priority.DEFAULT, only_already_extracted=False, prepare=None):
         self.logger.debug(f'getting all features for labeled vids')
+        feature=core.typecheck.ensure_str(feature_names)
         with self._new_features_lock:
-            self._outstanding_training_jobs[core.typecheck.ensure_str(feature_names)] += 1
+            self._outstanding_training_jobs[feature] += 1
         labels_and_features, unique_labels = self._get_all_labels_and_features(feature_names, only_already_extracted=only_already_extracted)
 
         if self.train_labels:
@@ -62,9 +63,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
             if prepare:
                 # This assumes prepare is cheap.
                 prepare()
-            if callback:
-                # This assumes the callback is cheap.
-                callback()
+            self._handle_trained_model(None, feature=feature, callback=callback)
             return
         self.logger.debug(f'labels {unique_labels}, vids {len(set(labels_and_features["vid"].to_pylist()))}')
         self.scheduler.schedule(
@@ -161,11 +160,14 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
             callback=partial(evaluate_quality_callback, feature_names=feature_names, vids=labeled_vids, n_splits=n_splits, callback=callback, priority=priority, **check_quality_kwds)
         )
 
-    def _handle_trained_model(self, trained_model_info, callback=None):
-        self.logger.debug(f'Saving model with info: {trained_model_info}')
-        self.storagemanager.add_model(**trained_model_info)
+    def _handle_trained_model(self, trained_model_info, callback=None, feature=None):
+        if trained_model_info:
+            self.logger.debug(f'Saving model with info: {trained_model_info}')
+            self.storagemanager.add_model(**trained_model_info)
+        else:
+            self.logger.debug(f'Handle trained model is None')
         with self._new_features_lock:
-            self._outstanding_training_jobs[trained_model_info['feature_name']] -= 1
+            self._outstanding_training_jobs[feature or trained_model_info['feature_name']] -= 1
             events = self._finish_training_events
             self._finish_training_events = []
         if callback is not None:
