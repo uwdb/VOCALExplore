@@ -34,6 +34,9 @@ class BasicVideoManager(AbstractVideoManager):
     def get_unique_labels(self) -> Iterable[str]:
         return self.storagemanager.get_unique_labels()
 
+    def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None):
+        return self.storagemanager.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence)
+
     def reset_annotations(self):
         # Intended for debugging only.
         self.storagemanager.reset_annotations()

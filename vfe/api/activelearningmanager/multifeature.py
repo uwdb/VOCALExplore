@@ -424,14 +424,14 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
     def get_unique_labels(self) -> Iterable[str]:
         return self.videomanager.get_unique_labels()
 
-    def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t):
+    def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t=None):
         # clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
         clips = [self.videomanager.get_clipinfo_with_path(clip.vid)]
         return [align_to_feature(self._features_to_align_to, clip) for clip in clips]
 
     def _predict_clips(self, feature_names: List[str], clips: Iterable[ClipInfo], partial_overlap=True):
         vids = [clip.vid for clip in clips]
-        if self.step > 2:
+        if self.step > 2 and len(vids):
             predictions: Iterable[PredictionSet] = self._do_get_predictions(feature_names, lambda: self.modelmanager.get_predictions(vids=vids, feature_names=feature_names, allow_stale_predictions=self.eager_model_training, priority=UserPriority.priority))
         else:
             predictions = []
@@ -459,6 +459,36 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         #     self.feature_to_newlabels[feature_name] = False
         #     wait.wait()
         return do_predict()
+
+    @logtime
+    def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None):
+        self.in_explore = True
+        self.scheduler.suspend_lowp()
+        self.step += 1
+
+        clips = self.videomanager.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence)
+        # This isn't safe because explore could need the results of a low-priority task.
+        # In the experiments we'll only actually suspend when we're doing everything eagerly,
+        # so hopefully this won't be an issue for now.
+        # If the suspend_lowp flag was not set, this will be a noop.
+
+        feature_names = self._get_best_features()
+
+        explore_clips = [self._expand_clip(feature_names, clip) for clip in clips]
+        clip_predictions = self._predict_clips(feature_names, clips)
+        flat_clips = [clip for explore_clip in explore_clips for clip in explore_clip]
+        explore_predictions_flattened = self._predict_clips(feature_names, flat_clips)
+        explore_predictions = []
+        renest_points = [len(c) for c in explore_clips]
+        start_idx = 0
+        for end_idx in renest_points:
+            explore_predictions.append(explore_predictions_flattened[start_idx:start_idx+end_idx])
+            start_idx = start_idx + end_idx
+
+        # If the suspend_lowp flag was not set, this will be a noop.
+        self.scheduler.resume_lowp()
+        self.in_explore = False
+        return ExploreSet(clips, explore_clips, clip_predictions, explore_predictions, feature_names)
 
     @logtime
     def explore(self, k, t, label=None, vids=None) -> ExploreSet:

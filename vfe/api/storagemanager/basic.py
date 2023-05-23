@@ -633,6 +633,44 @@ class BasicStorageManager(AbstractStorageManager):
                 AND f.end_time::DECIMAL(18,3)=p.end_time::DECIMAL(18,3)
         """, [mid]).arrow()
 
+    def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None) -> List[ClipInfo]:
+        params = []
+        where_clause = ""
+        if date_range:
+            # date_range is a 2-element array of [start, end].
+            # If we don't cast the datetime's to strings, we get a weird date out-of-range error.
+            where_clause += "AND ? <= vstart AND vstart <= ?"
+            params.extend([str(d) for d in date_range])
+
+        if labels:
+            joined_labels = ", ".join(["?" for _ in labels])
+            params.extend(labels)
+            where_clause += f"""AND vid IN (
+                SELECT vid
+                FROM annotations
+                WHERE label IN ({joined_labels})
+            )"""
+        if predictions:
+
+            joined_predictions = ", ".join(["?" for _ in predictions])
+            params.extend(predictions)
+            params.append(prediction_confidence)
+            where_clause += f"""AND vid IN (
+                SELECT vid
+                FROM predictions
+                WHERE label IN ({joined_predictions})
+                    AND probability > ?
+            )"""
+
+        query = f"""
+            SELECT DISTINCT v.vid, vstart, 0 as clip_start, vduration as clip_end
+            FROM video_metadata v
+            WHERE True
+                {where_clause}
+        """
+        results = self.get_cursor(read_only=True).execute(query, params).fetchall()
+        return [ClipInfo._make(result) for result in results]
+
     def reset_annotations(self):
         # Intended for debugging only.
         conn = self.get_cursor()
