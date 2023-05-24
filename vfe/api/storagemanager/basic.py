@@ -633,7 +633,7 @@ class BasicStorageManager(AbstractStorageManager):
                 AND f.end_time::DECIMAL(18,3)=p.end_time::DECIMAL(18,3)
         """, [mid]).arrow()
 
-    def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None) -> List[ClipInfo]:
+    def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None, mid=None) -> List[ClipInfo]:
         params = []
         where_clause = ""
         if date_range:
@@ -651,15 +651,17 @@ class BasicStorageManager(AbstractStorageManager):
                 WHERE label IN ({joined_labels})
             )"""
         if predictions:
-
+            assert mid is not None
             joined_predictions = ", ".join(["?" for _ in predictions])
             params.extend(predictions)
             params.append(prediction_confidence)
+            params.append(mid)
             where_clause += f"""AND vid IN (
                 SELECT vid
                 FROM predictions
                 WHERE label IN ({joined_predictions})
                     AND probability > ?
+                    AND mid=?
             )"""
 
         query = f"""
@@ -676,4 +678,5 @@ class BasicStorageManager(AbstractStorageManager):
         conn = self.get_cursor()
         conn.execute("truncate table predictions")
         conn.execute("truncate table models")
+        conn.execute("truncate table annotations")
         conn.commit()

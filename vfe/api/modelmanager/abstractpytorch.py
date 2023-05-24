@@ -61,6 +61,10 @@ class AbstractPytorchModelManager(AbstractModelManager):
         # For evaluation.
         self._feature_to_last_prediction_mid = {}
 
+    def latest_prediction_mid(self, feature_names: List[str]):
+        feature_name = core.typecheck.ensure_str(feature_names)
+        return self._feature_to_last_prediction_mid[feature_name]
+
     def add_labels(self, labels: Iterable[LabelInfo]):
         raise NotImplementedError
 
@@ -279,7 +283,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         except Exception as e:
             logger.exception(f'Failed to train model: {e}')
             return None
-        
+
 
     def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT):
         if vids is not None:

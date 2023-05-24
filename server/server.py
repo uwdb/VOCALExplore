@@ -114,13 +114,13 @@ class VOCALExploreService(rpyc.Service):
 
     @rpyc.exposed
     def get_clip_info(self, explore_id, vids):
-        return [
+        return json.dumps([
             {
                 'vid': vid,
                 **self._cached_clip_info[explore_id][vid]
             }
             for vid in vids
-        ]
+        ], cls=CustomEncoder)
 
     @rpyc.exposed
     def get_labels(self, vid):

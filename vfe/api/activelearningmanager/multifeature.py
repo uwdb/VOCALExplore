@@ -466,13 +466,21 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         self.scheduler.suspend_lowp()
         self.step += 1
 
-        clips = self.videomanager.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence)
+        # If we're searching over predictions, perform inference on all video clips that we have features for.
+        # Otherwise we'll just be searching over the selection that we've performed inference on for some reason.
+        feature_names = self._get_best_features()
+        if predictions:
+            self.modelmanager.get_predictions(feature_names=feature_names, priority=UserPriority.priority)
+            # Get the model ID that was used to make predictions. Query for predictions from just this latest model.
+            mid = self.modelmanager.latest_prediction_mid(feature_names)
+        else:
+            mid = None
+
+        clips = self.videomanager.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence, mid=mid)
         # This isn't safe because explore could need the results of a low-priority task.
         # In the experiments we'll only actually suspend when we're doing everything eagerly,
         # so hopefully this won't be an issue for now.
         # If the suspend_lowp flag was not set, this will be a noop.
-
-        feature_names = self._get_best_features()
 
         explore_clips = [self._expand_clip(feature_names, clip) for clip in clips]
         clip_predictions = self._predict_clips(feature_names, clips)
