@@ -9,7 +9,7 @@ import rpyc
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 import uuid
-from typing import List
+from typing import List, Tuple
 
 from vfe.api.activelearningmanager import ExploreSet
 from vfe.api.storagemanager import LabelInfo
@@ -98,8 +98,10 @@ class VOCALExploreService(rpyc.Service):
         return self._postprocess_clips((clips))
 
     @rpyc.exposed
-    def get_vids(self, explore_id) -> List[int]:
-        return list(self._cached_clip_info[explore_id].keys())
+    def get_vids(self, explore_id, start, end) -> Tuple[List[int], int]:
+        """Returns vids between start and end, along with the total number of vids."""
+        all_vids = sorted(list(self._cached_clip_info[explore_id].keys()))
+        return all_vids[start:end], len(all_vids)
 
     @rpyc.exposed
     def get_predictions(self, explore_id, vid):
