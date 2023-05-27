@@ -344,7 +344,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 torch.from_numpy(np.ones((len(filtered_features_for_inference), 1))),
             )
             self.logger.debug(f'Prepared datasets')
-            y_pred_probs = torch.stack(trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0)))
+            y_pred_probs = torch.cat(trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0, batch_size=256)))
             if len(y_pred_probs.size()) > 2:
                 y_pred_probs = y_pred_probs.squeeze()
             self.logger.debug('Got predictions')
