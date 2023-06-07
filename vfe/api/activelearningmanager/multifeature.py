@@ -6,6 +6,7 @@ import logging
 import math
 import numpy as np
 import random
+import queue
 from scipy import stats
 import statistics
 import threading
@@ -206,6 +207,18 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
         # Track whether a model was trained during the last Explore iteration.
         self._trained_model_for_iteration = False
+
+        # Thread for tasks that shouldn't block returning from a function.
+        self._lowp_task_queue = queue.SimpleQueue()
+        self._lowp_thread = threading.Thread(group=None, target=self._poll_for_tasks, name='low-priority-tasks')
+        self._lowp_thread.daemon = True
+        self._lowp_thread.start()
+
+    def _poll_for_tasks(self):
+        while True:
+            name, fn = self._lowp_task_queue.get()
+            self.logger.info(f"Executing low-p task: {name}")
+            fn()
 
     def _sample_vids_to_extract(self):
         # Wait one second after startup to let more important tasks get scheduled if necessary.
@@ -426,12 +439,12 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
     def _expand_clip(self, feature_names: List[str], clip: ClipInfo, t=None):
         # clips = self.videomanager.get_physical_clips_for_expanded_clip(clip, t)
-        clips = [self.videomanager.get_clipinfo_with_path(clip.vid)]
+        clips = self.videomanager.get_clipinfo_with_path([clip.vid])
         return [align_to_feature(self._features_to_align_to, clip) for clip in clips]
 
     def _predict_clips(self, feature_names: List[str], clips: Iterable[ClipInfo], partial_overlap=True):
         vids = [clip.vid for clip in clips]
-        if self.step > 2 and len(vids):
+        if len(vids):
             predictions: Iterable[PredictionSet] = self._do_get_predictions(feature_names, lambda: self.modelmanager.get_predictions(vids=vids, feature_names=feature_names, allow_stale_predictions=self.eager_model_training, priority=UserPriority.priority))
         else:
             predictions = []
@@ -470,33 +483,33 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         # Otherwise we'll just be searching over the selection that we've performed inference on for some reason.
         feature_names = self._get_best_features()
         if predictions:
-            self.modelmanager.get_predictions(feature_names=feature_names, priority=UserPriority.priority)
+            self.modelmanager.get_predictions(feature_names=feature_names, allow_stale_predictions=True, priority=UserPriority.priority)
             # Get the model ID that was used to make predictions. Query for predictions from just this latest model.
             mid = self.modelmanager.latest_prediction_mid(feature_names)
         else:
             mid = None
 
         clips = self.videomanager.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence, mid=mid)
-        # This isn't safe because explore could need the results of a low-priority task.
-        # In the experiments we'll only actually suspend when we're doing everything eagerly,
-        # so hopefully this won't be an issue for now.
-        # If the suspend_lowp flag was not set, this will be a noop.
 
-        explore_clips = [self._expand_clip(feature_names, clip) for clip in clips]
-        clip_predictions = self._predict_clips(feature_names, clips)
-        flat_clips = [clip for explore_clip in explore_clips for clip in explore_clip]
-        explore_predictions_flattened = self._predict_clips(feature_names, flat_clips)
-        explore_predictions = []
-        renest_points = [len(c) for c in explore_clips]
-        start_idx = 0
-        for end_idx in renest_points:
-            explore_predictions.append(explore_predictions_flattened[start_idx:start_idx+end_idx])
-            start_idx = start_idx + end_idx
+        vids = list(set([clip.vid for clip in clips]))
+
+        # Schedule prediction task. The idea is that we want this to happen now-ish,
+        # but not necessarily before we return since it can take a second or two to
+        # schedule all of the tasks.
+        self._lowp_task_queue.put((
+            "get_predictions_async",
+            partial(
+                self.modelmanager.get_predictions_async,
+                vids=vids,
+                feature_names=feature_names,
+                allow_stale_predictions=self.eager_model_training,
+            )
+        ))
 
         # If the suspend_lowp flag was not set, this will be a noop.
         self.scheduler.resume_lowp()
         self.in_explore = False
-        return ExploreSet(clips, explore_clips, clip_predictions, explore_predictions, feature_names)
+        return ExploreSet(clips, None, None, None, feature_names)
 
     @logtime
     def explore(self, k, t, label=None, vids=None) -> ExploreSet:

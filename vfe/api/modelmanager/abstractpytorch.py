@@ -1,6 +1,6 @@
 import datetime
 import duckdb
-import functools
+from functools import partial
 import json
 import logging
 import numpy as np
@@ -8,7 +8,9 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.compute as pc
 import pytorch_lightning as pl
+from pytorch_lightning.callbacks import BasePredictionWriter
 from sklearn import model_selection
+import threading
 import torch
 from torch.utils import data
 from typing import Iterable, Dict, Union, Callable, List
@@ -18,7 +20,7 @@ from vfe.core.timing import logtime
 from vfe import models
 
 from vfe.api.featuremanager import AbstractFeatureManager
-from vfe.api.scheduler import Priority
+from vfe.api.scheduler import AbstractScheduler, Priority
 from vfe.api.storagemanager import AbstractStorageManager, ModelInfo, LabelInfo, clipinfo_to_clipset, ClipSet, VidType
 from .abstract import AbstractModelManager, PredictionSet
 
@@ -29,10 +31,31 @@ def _warn_for_unlabeled(logger, y, caller):
     if n_notlabeled:
         logger.warn(f'{caller} found {n_notlabeled} clips that are not labeled')
 
+def probs_to_predictionset(y_pred_probs, model_labels, clipset):
+    # Return:
+    # <vid, start, end, prediction probabilities>
+    # Prediction probs: {<label>: <val>}
+    if y_pred_probs.dim() == 1:
+        y_pred_probs = y_pred_probs.unsqueeze(dim=1)
+    predictions = []
+    for i in range(len(clipset)):
+        feature_info = clipset.take([i])
+        # Each column is an array with one pyarrow-typed element.
+        vid = feature_info['vid'][0].as_py()
+        start_time = feature_info['start_time'][0].as_py()
+        end_time = feature_info['end_time'][0].as_py()
+        prediction_probs = {
+            l: v.item()
+            for l, v in zip(model_labels, y_pred_probs[i])
+        }
+        predictions.append(PredictionSet(vid, start_time, end_time, prediction_probs))
+    return predictions
+
 class AbstractPytorchModelManager(AbstractModelManager):
     def __init__(self,
         storagemanager: AbstractStorageManager,
         featuremanager: AbstractFeatureManager,
+        scheduler: AbstractScheduler = None,
         device=None,
         random_state=None,
         deterministic=False,
@@ -42,6 +65,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
     ):
         self.storagemanager = storagemanager
         self.featuremanager = featuremanager
+        self.scheduler = scheduler
         self.device = device if device is not None else \
             'cuda' if torch.cuda.is_available() else 'cpu'
         self.logger = logger
@@ -57,9 +81,21 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         self.ignore_labels = set()
 
-
         # For evaluation.
         self._feature_to_last_prediction_mid = {}
+
+        # Async predictions.
+        # We can't pass the queue to the async function unless it comes from a Manager.
+        self._predictions_queue = self.scheduler.context().Manager().Queue() # Slow; starts a new process.
+        self._prediction_processing_thread = threading.Thread(group=None, target=self._handle_prediction_batch, args=(self._predictions_queue,), name='process-predictions')
+        self._prediction_processing_thread.daemon = True
+        self._prediction_processing_thread.start()
+
+    def _handle_prediction_batch(self, predictions_queue):
+        while True:
+            prediction_kwargs = predictions_queue.get()
+            self.logger.debug("Read predictions batch")
+            self.storagemanager.add_predictions(**prediction_kwargs)
 
     def latest_prediction_mid(self, feature_names: List[str]):
         feature_name = core.typecheck.ensure_str(feature_names)
@@ -284,8 +320,53 @@ class AbstractPytorchModelManager(AbstractModelManager):
             logger.exception(f'Failed to train model: {e}')
             return None
 
+    class CustomWriter(BasePredictionWriter):
+        def __init__(self, prediction_queue=None, features_table=None, model_info=None, write_interval='batch'):
+            super().__init__(write_interval)
+            self.prediction_queue = prediction_queue
+            self.features_table = features_table
+            self.model_info = model_info
 
-    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT):
+        def write_on_batch_end(self, trainer, pl_module, prediction, batch_indices, batch, batch_idx, dataloader_idx):
+            logger.debug('In write_on_batch_end')
+            batch_indices = batch[1]
+            if len(prediction.size()) > 2:
+                prediction = prediction.squeeze()
+            prediction_batch = {
+                'mid': self.model_info.mid,
+                'predictionset_list': probs_to_predictionset(
+                    prediction,
+                    self.model_info.model_labels,
+                    self.features_table.take(batch_indices.cpu().numpy())
+                )
+            }
+            self.prediction_queue.put(prediction_batch)
+
+    @staticmethod
+    def _predict_model_async(model_info: ModelInfo, features: pa.Table, accelerator: str, predictions_queue):
+        model = models.ModelType(model_info.model_type).get_cls().load_from_checkpoint(model_info.model_path)
+        try:
+            logger.debug('Loaded model')
+            trainer = pl.Trainer(
+                accelerator=accelerator,
+                devices=1,
+                max_epochs=-1,
+                enable_progress_bar=False,
+                logger=False,
+                callbacks=[AbstractPytorchModelManager.CustomWriter(prediction_queue=predictions_queue, features_table=features, model_info=model_info)]
+            )
+            pt_dataset = data.TensorDataset(
+                torch.from_numpy(np.vstack(features['feature'].to_numpy())),
+                # The second element of each batch will be the index of each prediction.
+                torch.from_numpy(np.arange(len(features))),
+            )
+            logger.debug(f'Prepared datasets')
+            trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0, batch_size=256), return_predictions=False)
+            logger.debug('Got predictions')
+        except Exception as e:
+            logger.exception("Exception: {e}")
+
+    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT, run_async=False):
         if vids is not None:
             features = self.featuremanager.get_features(feature_names, np.array(vids), priority=priority)
         else:
@@ -329,6 +410,22 @@ class AbstractPytorchModelManager(AbstractModelManager):
         filtered_features_for_inference = existing_predictions.filter(missing_predictions)
         filtered_features_with_predictions = existing_predictions.filter(pc.invert(missing_predictions))
 
+        if run_async:
+            if not len(filtered_features_for_inference):
+                return
+            self.scheduler.schedule(
+                'predict',
+                partial(
+                    self._predict_model_async,
+                    model_info=model_info,
+                    features=filtered_features_for_inference,
+                    accelerator=self.device,
+                    predictions_queue=self._predictions_queue,
+                ),
+                priority=priority,
+            )
+            return
+
         if len(filtered_features_for_inference):
             model = models.ModelType(model_info.model_type).get_cls().load_from_checkpoint(model_info.model_path)
             self.logger.debug(f'Loaded model')
@@ -349,9 +446,8 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = y_pred_probs.squeeze()
             self.logger.debug('Got predictions')
 
-            # TODO: read saved predictions and only run the model to get predictions on new videos.
             self.logger.debug(f'Saving predictions for model {model_info.mid}')
-            self.storagemanager.add_predictions(model_info.mid, self._probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
+            self.storagemanager.add_predictions(model_info.mid, probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
         else:
             y_pred_probs = None
 
@@ -373,7 +469,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         # Now we're returning filtered_features with an extra 'pred_dict' column, but I think all of the callers will just ignore it.
         return y_pred_probs, model_info.model_labels, filtered_features
 
-    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:
+    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT, run_async=False) -> Union[Iterable[PredictionSet], None]:
         if (start is not None and end is None) or (start is None and end is not None):
             self.logger.warn('_predict_model may not correctly handle case where only one of start/end is None')
 
@@ -390,7 +486,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 self._feature_to_last_prediction_mid[feature_name] = model_info.mid
             return model_info
 
-        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority)
+        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async)
 
     def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1):
         # Returns dictionary with keys:
@@ -429,23 +525,3 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         results = models.AbstractStrategy._results_for_split('pred', y_true, None, y_pred_probs, labels=labels, multilabel_threshold=model_info.f1_threshold)
         return results
-
-    def _probs_to_predictionset(self, y_pred_probs, model_labels, clipset):
-        # Return:
-        # <vid, start, end, prediction probabilities>
-        # Prediction probs: {<label>: <val>}
-        if y_pred_probs.dim() == 1:
-            y_pred_probs = y_pred_probs.unsqueeze(dim=1)
-        predictions = []
-        for i in range(len(clipset)):
-            feature_info = clipset.take([i])
-            # Each column is an array with one pyarrow-typed element.
-            vid = feature_info['vid'][0].as_py()
-            start_time = feature_info['start_time'][0].as_py()
-            end_time = feature_info['end_time'][0].as_py()
-            prediction_probs = {
-                l: v.item()
-                for l, v in zip(model_labels, y_pred_probs[i])
-            }
-            predictions.append(PredictionSet(vid, start_time, end_time, prediction_probs))
-        return predictions

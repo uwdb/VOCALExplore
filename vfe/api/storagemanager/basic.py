@@ -568,12 +568,13 @@ class BasicStorageManager(AbstractStorageManager):
         returnvals = list(returnvals)
         return returnvals
 
-    def get_clipinfo_with_path(self, vid: VidType) -> ClipInfoWithPath:
-        vstart, duration, vpath, thumbpath = self.get_cursor(read_only=True).execute(
-            "SELECT vstart, vduration, vpath, thumbpath FROM video_metadata WHERE vid=?",
-            [vid]
-        ).fetchall()[0]
-        return ClipInfoWithPath(vid, vstart, 0, duration, vpath, thumbpath)
+    def get_clipinfo_with_path(self, vids: List[VidType]) -> List[ClipInfoWithPath]:
+        qmarks = ", ".join(["?" for _ in vids])
+        results = self.get_cursor(read_only=True).execute(
+            f"SELECT vid, vstart, 0, vduration, vpath, thumbpath FROM video_metadata WHERE vid IN ({qmarks})",
+            vids
+        ).fetchall()
+        return list(map(ClipInfoWithPath._make, results))
 
     def get_clips_for_timespan(self, realtime_start, realtime_end) -> Iterable[ClipInfoWithPath]:
         # Not ideal to format string, but it's a read-only query and it's cleaner.
@@ -596,6 +597,7 @@ class BasicStorageManager(AbstractStorageManager):
         return map(ClipInfoWithPath._make, results)
 
     def add_predictions(self, mid, predictionset_list):
+        self.logger.debug(f'Adding {len(predictionset_list)} predictions')
         # predictionset: (vid, start_time, end_time, predictions {label: prob,})
         query = """
             INSERT INTO predictions

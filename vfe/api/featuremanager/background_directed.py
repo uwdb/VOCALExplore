@@ -369,6 +369,6 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
                         event.set()
                     fname_and_vids_and_callbacks['callbacks'].append(functools.partial(handle_event, event=event))
                     events.append(event)
-        self.logger.debug(f'Waiting for vids {vids if len(vids) < 500 else "#" + str(len(vids))}; {len(events)} remaining feature extraction tasks')
+        self.logger.debug(f'Waiting for vids {vids if len(vids) < 50 else "#" + str(len(vids))}; {len(events)} remaining feature extraction tasks')
         for event in events:
             event.wait()

@@ -9,14 +9,13 @@ from vfe.api.featuremanager import AbstractAsyncFeatureManager
 from vfe.api.storagemanager import LabelInfo
 from vfe.api.scheduler import AbstractScheduler, Priority, UserPriority
 from .abstract import AbstractAsyncModelManager, PredictionSet
-from .abstractpytorch import AbstractPytorchModelManager
+from .abstractpytorch import AbstractPytorchModelManager, probs_to_predictionset
 
 # BGModelManager could also speed things up by training models on just clips with features
 # already extracted, even if they are a subset of all labeled data.
 class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncModelManager):
     def __init__(self,
             *args,
-            scheduler: AbstractScheduler = None,
             parallel_kfold = True,
             min_trainsize = 5,
             train_labels: List[str] = None,
@@ -25,7 +24,6 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
         super().__init__(*args, **kwargs)
         self._asyncfm = isinstance(self.featuremanager, AbstractAsyncFeatureManager)
         self.logger = logging.getLogger(__name__)
-        self.scheduler = scheduler
         self.parallel_kfold = parallel_kfold
         self.min_trainsize = min_trainsize
         self.train_labels = train_labels
@@ -194,6 +192,42 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
 
         self.storagemanager.delete_labels(labels)
 
+    def get_predictions_async(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> None:
+        feature_names = core.typecheck.ensure_list(feature_names)
+        nlabeled = len(self.storagemanager.get_vids_with_labels())
+        if not nlabeled:
+            return
+
+        # This isn't ideal to wait for a new model, but currently the bottleneck is inference
+        # not training, so live with this for now.
+        feature_names_str = core.typecheck.ensure_str(feature_names)
+        if (not allow_stale_predictions and self._newlabels and feature_names_str not in self._features_trained_on_newlabels) \
+                or (self.storagemanager.get_model_info(feature_names_str) is None):
+            self._wait_for_model(feature_names)
+            self._features_trained_on_newlabels.add(feature_names_str)
+
+        # Operate in batches of videos. This way if we have to wait for feature extraction,
+        # we'll start getting predictions for some videos instead of waiting to process
+        # the entire dataset.
+        batch_size = 100
+        for i in range(0, len(vids), batch_size):
+            if self._asyncfm and vids is not None:
+                self.featuremanager.extract_features_async(
+                    feature_names,
+                    vids[i: i+batch_size],
+                    priority=priority,
+                    callback=partial(
+                        self._predict_model_for_feature,
+                        feature_names=feature_names,
+                        vids=vids[i: i+batch_size],
+                        start=start,
+                        end=end,
+                        ignore_labeled=ignore_labeled,
+                        priority=priority,
+                        run_async=True,
+                    )
+                )
+
     def get_predictions(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:
         feature_names = core.typecheck.ensure_list(feature_names)
         # len wouldn't work if get_vids_with_labels returned a map rather than a list.
@@ -240,7 +274,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
         #         time.sleep(0.5)
         #         continue
 
-        return self._probs_to_predictionset(*predictions)
+        return probs_to_predictionset(*predictions)
 
     def _wait_for_model(self, feature_names: List[str]):
         with self._new_features_lock:

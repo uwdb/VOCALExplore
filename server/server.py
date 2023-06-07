@@ -33,6 +33,7 @@ class VOCALExploreService(rpyc.Service):
         self.alm = get_alm(config_path)
         self._cached_predictions = defaultdict(dict)
         self._cached_clip_info = defaultdict(dict)
+        self._cached_prediction_features = defaultdict(list)
 
     def on_connect(self, conn):
         logger.info("Connected")
@@ -49,41 +50,57 @@ class VOCALExploreService(rpyc.Service):
         return vpaths_and_thumbnails
 
     def _prune_context_clips(self, clips: ExploreSet):
+        if not clips.context_clips:
+            return clips
         for i in range(len(clips.explore_clips)):
             vid_to_keep = clips.explore_clips[i].vid
             context_clips_to_keep = [context_clip for context_clip in clips.context_clips[i] if context_clip.vid == vid_to_keep]
             clips.context_clips[i] = context_clips_to_keep
         return clips
 
-    def _postprocess_clips(self, clips: ExploreSet):
+    def _postprocess_clips(self, clips: ExploreSet, cache_predictions=True):
         # Until we figure out how to expire keys, only keep around 1.
         self._cached_predictions.clear()
         self._cached_clip_info.clear()
+        self._cached_prediction_features.clear()
 
         clips = self._prune_context_clips(clips)
         explore_id = str(uuid.uuid4())
-        vid_info = {
-            clips.explore_clips[i].vid: {
-                # Assumes that we have one context clip per explore clip,
-                # which is true as long as we don't return context across videos.
-                'context_predictions': clips.context_predictions[i][0],
+        if cache_predictions:
+            vid_info = {
+                clips.explore_clips[i].vid: {
+                    # Assumes that we have one context clip per explore clip,
+                    # which is true as long as we don't return context across videos.
+                    'context_predictions': clips.context_predictions[i][0] if clips.context_predictions else [],
+                }
+                for i in range(len(clips.explore_clips))
             }
-            for i in range(len(clips.explore_clips))
-        }
-        self._cached_predictions[explore_id] = vid_info
+            self._cached_predictions[explore_id] = vid_info
+        else:
+            self._cached_predictions[explore_id] = {}
 
-        clip_info = {
-            clips.explore_clips[i].vid: {
-                # Assumes that we have one context clip per explore clip,
-                # which is true as long as we don't return context across videos.
-                "thumbpath": clips.context_clips[i][0].thumbpath,
-                "vpath": clips.context_clips[i][0].vpath,
+        if clips.context_clips:
+            clip_info = {
+                clips.explore_clips[i].vid: {
+                    # Assumes that we have one context clip per explore clip,
+                    # which is true as long as we don't return context across videos.
+                    "vid": clips.context_clips[i][0].vid,
+                    "thumbpath": clips.context_clips[i][0].thumbpath,
+                    "vpath": clips.context_clips[i][0].vpath,
+                }
+                for i in range(len(clips.explore_clips))
             }
-            for i in range(len(clips.explore_clips))
-        }
+        else:
+            clip_info = {
+                clip.vid: {}
+                for clip in clips.explore_clips
+            }
         self._cached_clip_info[explore_id] = clip_info
 
-        assert len(self._cached_predictions[explore_id]) == len(self._cached_clip_info[explore_id])
+        self._cached_prediction_features[explore_id] = clips.prediction_feature_names
+
+        if cache_predictions:
+            assert len(self._cached_predictions[explore_id]) == len(self._cached_clip_info[explore_id])
 
         logger.debug(f'Caching predictions for vids {list(self._cached_predictions.keys())}')
         return {
@@ -104,24 +121,37 @@ class VOCALExploreService(rpyc.Service):
         return all_vids[start:end], len(all_vids)
 
     @rpyc.exposed
+    @core.timing.logtime
     def get_predictions(self, explore_id, vid):
         if vid not in self._cached_predictions[explore_id]:
-            logger.exception(f'Error: expected to find vid {vid} in cached predictions, but only have {list(self._cached_predictions[explore_id].keys())}')
-            return {}
+            logger.info(f'Did not find vid {vid} in cached predictions')
+            predictions = self.alm.modelmanager.get_predictions(vids=[vid], feature_names=self._cached_prediction_features[explore_id], allow_stale_predictions=True)
+        else:
+            predictions = self._cached_predictions[explore_id][vid]['context_predictions']
 
         return [
             ps._asdict() for ps in
-            self._cached_predictions[explore_id][vid]['context_predictions']
+            predictions
         ]
 
     @rpyc.exposed
     def get_clip_info(self, explore_id, vids):
+        if not vids:
+            return json.dumps([])
+
+        # Check if we have to fetch clip info with path for the vids.
+        if self._cached_clip_info[explore_id][vids[0]]:
+            clips = list(self._cached_clip_info[explore_id].values())
+        else:
+            clips = [c._asdict() for c in self.alm.videomanager.get_clipinfo_with_path(vids)]
+
         return json.dumps([
             {
-                'vid': vid,
-                **self._cached_clip_info[explore_id][vid]
+                'vid': clip['vid'],
+                'thumbpath': clip['thumbpath'],
+                'vpath': clip['vpath'],
             }
-            for vid in vids
+            for clip in clips
         ], cls=CustomEncoder)
 
     @rpyc.exposed
@@ -182,12 +212,18 @@ class VOCALExploreService(rpyc.Service):
             assert prediction_confidence is not None
 
         clips = self.alm.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence)
-        return self._postprocess_clips((clips))
+        return self._postprocess_clips(clips, cache_predictions=False)
 
     @rpyc.exposed
     def debug_reset_annotations(self):
         logger.info("Resetting annotations")
         self.alm.videomanager.reset_annotations()
+
+    @rpyc.exposed
+    def debug_add_audio(self):
+        logger.info("Adding audio")
+        self.alm.videomanager.add_silent_audio()
+        return True
 
 
 if __name__ == "__main__":

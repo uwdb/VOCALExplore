@@ -10,7 +10,7 @@ from vfe.core.logging import configure_logger
 from vfe.api.featuremanager import AbstractAsyncFeatureManager
 from vfe.api.storagemanager import LabelInfo
 from .abstract import PredictionSet
-from .abstractpytorch import AbstractPytorchModelManager
+from .abstractpytorch import AbstractPytorchModelManager, probs_to_predictionset
 
 # BGModelManager could also speed things up by training models on just clips with features
 # already extracted, even if they are a subset of all labeled data.
@@ -152,7 +152,7 @@ class BackgroundModelManager(AbstractPytorchModelManager):
                 time.sleep(0.5)
                 continue
 
-            return self._probs_to_predictionset(*predictions)
+            return probs_to_predictionset(*predictions)
 
     def _wait_for_model(self):
         with self._new_features_lock:

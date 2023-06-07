@@ -5,7 +5,7 @@ from vfe import models
 from vfe.api.featuremanager import AbstractAsyncFeatureManager
 from vfe.api.storagemanager import LabelInfo
 from .abstract import PredictionSet
-from .abstractpytorch import AbstractPytorchModelManager
+from .abstractpytorch import AbstractPytorchModelManager, probs_to_predictionset
 
 class BasicModelManager(AbstractPytorchModelManager):
     def __init__(self,
@@ -59,7 +59,7 @@ class BasicModelManager(AbstractPytorchModelManager):
         all_known_labels = set(self.storagemanager.get_distinct_labels()) - self.ignore_labels
         if all_known_labels - set(model_labels):
             raise RuntimeError(f'Model does not predict all known labels (missing ({set(all_known_labels) - set(model_labels)})). This is unexpected since we train a new model whenever new labels come in.')
-        return self._probs_to_predictionset(*prediction_results)
+        return probs_to_predictionset(*prediction_results)
 
     @property
     def _has_any_labels(self):

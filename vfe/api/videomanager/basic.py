@@ -1,7 +1,11 @@
-from typing import Iterable, Tuple, Union
+import logging
+from typing import Iterable, Tuple, Union, List
 
+from vfe.core import video
 from vfe.api.storagemanager import AbstractStorageManager, VidType, ClipInfo, ClipInfoWithPath, LabelInfo
 from .abstract import AbstractVideoManager
+
+logger = logging.getLogger(__name__)
 
 class BasicVideoManager(AbstractVideoManager):
     def __init__(self, storagemanager: AbstractStorageManager):
@@ -10,8 +14,8 @@ class BasicVideoManager(AbstractVideoManager):
     def get_clip_splits(self, vids, clip_duration) -> Iterable[ClipInfo]:
         return self.storagemanager.get_clip_splits(vids, clip_duration)
 
-    def get_clipinfo_with_path(self, vid: VidType) -> ClipInfoWithPath:
-        return self.storagemanager.get_clipinfo_with_path(vid)
+    def get_clipinfo_with_path(self, vids: List[VidType]) -> List[ClipInfoWithPath]:
+        return self.storagemanager.get_clipinfo_with_path(vids)
 
     def get_physical_clips_for_expanded_clip(self, clip_info: ClipInfo, total_duration) -> Iterable[ClipInfoWithPath]:
         missing_duration = total_duration - (clip_info.end_time - clip_info.start_time)
@@ -40,3 +44,12 @@ class BasicVideoManager(AbstractVideoManager):
     def reset_annotations(self):
         # Intended for debugging only.
         self.storagemanager.reset_annotations()
+
+    def add_silent_audio(self):
+        vpaths = self.get_video_paths(vids=None)
+        count = 0
+        for vid, vpath in vpaths:
+            count += 1
+            if count and count % 20 == 0:
+                logger.debug(f'Added audio to {count}/{len(vpaths)}')
+            video.add_silent_audio(vpath)

@@ -3,6 +3,7 @@ import fractions
 import logging
 import os
 from pathlib import Path
+import av
 import re
 import subprocess
 import shlex
@@ -36,6 +37,30 @@ def save_thumbnail(video_path, thumbnail_dir) -> str:
     except Exception as e:
         logger.exception(f'Failed to save thumbnail for {video_path} with error {e}')
         return None
+
+def add_silent_audio(video_path) -> None:
+    # Check if video already has audio.
+    container = av.open(video_path)
+    has_audio = container.streams.audio
+    if has_audio:
+        return
+
+    base, ext = os.path.splitext(video_path)
+    tmp_video = base + ".tmp" + ext
+    result = subprocess.run(shlex.split(
+        (
+            'ffmpeg -hide_banner '
+            '-f lavfi -i anullsrc=channel_layout=stereo:sample_rate=44100 '
+            f'-i {video_path} '
+            '-c:v copy -c:a aac -shortest '
+            f'{tmp_video}'
+        )),
+    )
+    if result.returncode != 0:
+        logger.error(f'Error adding audio track: {result}')
+    else:
+        os.rename(tmp_video, video_path)
+
 
 def get_video_fps_and_nframes(video_path):
     cap = cv2.VideoCapture(video_path)
