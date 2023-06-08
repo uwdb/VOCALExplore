@@ -1,6 +1,7 @@
 import argparse
 from collections import defaultdict
 import datetime
+from decimal import Decimal
 import json
 import logging
 import os
@@ -23,6 +24,8 @@ class CustomEncoder(json.JSONEncoder):
     def default(self, obj):
         if isinstance(obj, datetime.datetime):
             return str(obj)
+        if isinstance(obj, Decimal):
+            return float(obj)
         return json.JSONEncoder.default(self, obj)
 
 
@@ -118,7 +121,7 @@ class VOCALExploreService(rpyc.Service):
     def get_vids(self, explore_id, start, end) -> Tuple[List[int], int]:
         """Returns vids between start and end, along with the total number of vids."""
         all_vids = sorted(list(self._cached_clip_info[explore_id].keys()))
-        return all_vids[start:end], len(all_vids)
+        return json.dumps(all_vids[start:end]), len(all_vids)
 
     @rpyc.exposed
     @core.timing.logtime
@@ -129,10 +132,10 @@ class VOCALExploreService(rpyc.Service):
         else:
             predictions = self._cached_predictions[explore_id][vid]['context_predictions']
 
-        return [
+        return json.dumps([
             ps._asdict() for ps in
             predictions
-        ]
+        ])
 
     @rpyc.exposed
     def get_clip_info(self, explore_id, vids):
@@ -160,14 +163,12 @@ class VOCALExploreService(rpyc.Service):
         labels = list(self.alm.get_labels([vid]))
 
         logger.debug([label._asdict() for label in labels])
-        return {
-            'labels': [label._asdict() for label in labels],
-        }
+        return json.dumps([label._asdict() for label in labels], cls=CustomEncoder)
 
     @rpyc.exposed
     def get_all_labels(self):
         logger.info("Getting all labels")
-        return self.alm.get_unique_labels()
+        return json.dumps(self.alm.get_unique_labels())
 
     @rpyc.exposed
     def add_label(self, label_dict):
