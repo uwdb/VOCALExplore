@@ -2,14 +2,17 @@ import argparse
 from collections import defaultdict
 import datetime
 from decimal import Decimal
+from functools import partial
 import json
 import logging
 import os
 from pathlib import Path
+import queue
 import rpyc
 from rpyc.utils.helpers import classpartial
 from rpyc.utils.server import ThreadedServer
 import uuid
+import threading
 from typing import List, Tuple
 
 from vfe.api.activelearningmanager import ExploreSet
@@ -37,6 +40,19 @@ class VOCALExploreService(rpyc.Service):
         self._cached_predictions = defaultdict(dict)
         self._cached_clip_info = defaultdict(dict)
         self._cached_prediction_features = defaultdict(list)
+        self._cache = defaultdict(dict)
+
+        # Thread for tasks that shouldn't block returning from a function.
+        self._lowp_task_queue = queue.SimpleQueue()
+        self._lowp_thread = threading.Thread(group=None, target=self._poll_for_tasks, name='low-priority-tasks')
+        self._lowp_thread.daemon = True
+        self._lowp_thread.start()
+
+    def _poll_for_tasks(self):
+        while True:
+            name, fn = self._lowp_task_queue.get()
+            logger.info(f"Executing low-p task: {name}")
+            fn()
 
     def on_connect(self, conn):
         logger.info("Connected")
@@ -45,6 +61,36 @@ class VOCALExploreService(rpyc.Service):
     def add_video(self, video_path, start_time):
         logger.info('Adding video')
         self.alm.add_video(video_path, start_time)
+
+    def _progress_prepare_fn(self, *args, lock=None, key=None):
+        with lock:
+            if "total" not in self._cache[key]:
+                self._cache[key]["total"] = 0
+            self._cache[key]["total"] += 1
+
+    def _progress_callback_fn(self, *args, lock=None, key=None):
+        with lock:
+            if "done" not in self._cache[key]:
+                self._cache[key]["done"] = 0
+            self._cache[key]["done"] += 1
+
+    @rpyc.exposed
+    def add_videos(self, base_dir):
+        load_key = str(uuid.uuid4())
+        lock = threading.Lock()
+        self._cache[load_key]["lock"] = lock
+
+        self._lowp_task_queue.put((
+            "add_videos",
+            partial(
+                self.alm.featuremanager.add_videos_from_dir,
+                base_dir=base_dir,
+                thumbnail_dir=self.alm.thumbnail_dir,
+                prepare_fn=partial(self._progress_prepare_fn, lock=lock, key=load_key),
+                callback_fn=partial(self._progress_callback_fn, lock=lock, key=load_key),
+            )
+        ))
+        return json.dumps({"key": load_key})
 
     @rpyc.exposed
     def get_videos(self, limit=None):
@@ -171,6 +217,13 @@ class VOCALExploreService(rpyc.Service):
         return json.dumps(self.alm.get_unique_labels())
 
     @rpyc.exposed
+    def get_all_prediction_labels(self):
+        logger.info("Getting all prediction labels")
+        # Just get the labels from the most recent model.
+        model_info = self.alm.videomanager.storagemanager.get_model_info(None)
+        return json.dumps(model_info.model_labels) if model_info else self.get_all_labels()
+
+    @rpyc.exposed
     def add_label(self, label_dict):
         logger.info("Adding label")
         label_info = LabelInfo(
@@ -214,6 +267,37 @@ class VOCALExploreService(rpyc.Service):
 
         clips = self.alm.search_videos(date_range=date_range, labels=labels, predictions=predictions, prediction_confidence=prediction_confidence)
         return self._postprocess_clips(clips, cache_predictions=False)
+
+    @rpyc.exposed
+    def transcode_videos(self, base_dir, output_dir, target_extension):
+        transcode_key = str(uuid.uuid4())
+        lock = threading.Lock()
+
+        self._cache[transcode_key]["lock"] = lock
+
+        self.alm.videomanager.transcode_videos(
+            base_dir,
+            output_dir,
+            target_extension,
+            self.alm.scheduler,
+            prepare_fn=partial(self._progress_prepare_fn, lock=lock, key=transcode_key),
+            callback_fn=partial(self._progress_callback_fn, lock=lock, key=transcode_key),
+        )
+        return json.dumps({"key": transcode_key})
+
+    @rpyc.exposed
+    def get_progress(self, progress_key):
+        if progress_key not in self._cache:
+            return json.dumps({})
+
+        with self._cache[progress_key]["lock"]:
+            total = self._cache[progress_key].get("total", 0)
+            done = self._cache[progress_key].get("done", 0)
+
+        return json.dumps({
+            "total": total,
+            "done": done,
+        })
 
     @rpyc.exposed
     def debug_reset_annotations(self):

@@ -145,7 +145,7 @@ class FeatureEvalStrategy(Enum):
             assert False, f'Unknown feature eval strategy {self}'
 
 class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
-    def __init__(self, featuremanager: AbstractAsyncFeatureManager, modelmanager: AbstractAsyncModelManager, videomanager: AbstractVideoManager, explorer: AbstractExplorer, feature_names: Iterable[str], scheduler: AbstractScheduler, rng=None, strategy: FeatureEvalStrategy=None, strategy_kwargs: Dict = {}, eager_feature_extraction_labeled=False, eager_model_training=False, eager_feature_extraction_unlabeled=False, explore_label_threshold=-1, return_predictions=True, thumbnail_dir=None):
+    def __init__(self, featuremanager: AbstractAsyncFeatureManager, modelmanager: AbstractAsyncModelManager, videomanager: AbstractVideoManager, explorer: AbstractExplorer, feature_names: Iterable[str], scheduler: AbstractScheduler, rng=None, strategy: FeatureEvalStrategy=None, strategy_kwargs: Dict = {}, eager_feature_extraction_labeled=False, eager_model_training=False, eager_feature_extraction_unlabeled=0, explore_label_threshold=-1, return_predictions=True, thumbnail_dir=None):
         assert len(feature_names), f'Must specify at least one feature; {feature_names}'
 
         self.featuremanager = featuremanager
@@ -180,7 +180,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         self.eager_model_training = eager_model_training
 
         if eager_feature_extraction_unlabeled:
-            self._eager_extraction_thread = threading.Thread(group=None, target=self._sample_vids_to_extract, name='eager-feature-extract')
+            self._eager_extraction_thread = threading.Thread(group=None, target=self._sample_vids_to_extract, kwargs=dict(batch_size=eager_feature_extraction_unlabeled), name='eager-feature-extract')
             self._eager_extraction_thread.daemon = True # True because infinite loop never joins.
             self._eager_extraction_thread.start()
 
@@ -210,7 +210,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
 
         # Thread for tasks that shouldn't block returning from a function.
         self._lowp_task_queue = queue.SimpleQueue()
-        self._lowp_thread = threading.Thread(group=None, target=self._poll_for_tasks, name='low-priority-tasks')
+        self._lowp_thread = threading.Thread(group=None, target=self._poll_for_tasks, name='alm-low-priority-tasks')
         self._lowp_thread.daemon = True
         self._lowp_thread.start()
 
@@ -220,7 +220,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
             self.logger.info(f"Executing low-p task: {name}")
             fn()
 
-    def _sample_vids_to_extract(self):
+    def _sample_vids_to_extract(self, batch_size=10):
         # Wait one second after startup to let more important tasks get scheduled if necessary.
         time.sleep(1)
         while True:
@@ -243,7 +243,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
             if not vids_without_features:
                 continue
 
-            size = min(10, len(vids_without_features))
+            size = min(batch_size, len(vids_without_features))
             vids_to_extract = self.rng.choice(np.array([*vids_without_features]), size=size, replace=False)
             self.logger.debug(f'Eagerly extracting features from vids {vids_to_extract}')
             for feature_name in feature_names:

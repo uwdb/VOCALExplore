@@ -4,6 +4,7 @@ debugpy==1.5.1
 disjoint-set==0.7.3
 duckdb==0.7.1
 fastcluster==1.2.4
+ffmpeg-python==0.2.0
 ipykernel==6.9.1
 jsonschema==4.16.0 # https://github.com/altair-viz/altair/issues/2767
 matplotlib==3.5.1

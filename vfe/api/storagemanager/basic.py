@@ -145,7 +145,7 @@ class BasicStorageManager(AbstractStorageManager):
             create unique index if not exists predictions_unique on predictions(mid, vid, start_time, end_time, label, probability)
         """)
 
-    def _add_videos(self, video_csv_path):
+    def _add_videos(self, video_csv_path, include_thumbpath=False):
         conn = self.get_cursor()
 
         # Import video_info_csv_path.
@@ -160,15 +160,17 @@ class BasicStorageManager(AbstractStorageManager):
             SELECT vid
             FROM video_metadata
         """).fetchnumpy()['vid'].tolist()) # tolist to convert from numpy type to python type.
-        conn.execute("""
+        extra_select = ", thumbpath" if include_thumbpath else ""
+        conn.execute(f"""
             INSERT INTO video_metadata
-            SELECT nextval('vid_seq') vid, path, start, duration
+            SELECT nextval('vid_seq') vid, path, start, duration {extra_select}
             FROM video_metadata_raw
             WHERE path NOT IN (
                 SELECT vpath
                 FROM video_metadata
             )
         """)
+        conn.execute("DROP TABLE video_metadata_raw")
         new_vids = set(conn.execute("""
             SELECT vid
             FROM video_metadata
@@ -189,8 +191,8 @@ class BasicStorageManager(AbstractStorageManager):
             start_time = str(start_time)
         return self._add_video(path, start_time, duration, thumbnail_path)
 
-    def add_videos(self, video_csv_path) -> Iterable[VidType]:
-        return self._add_videos(video_csv_path)
+    def add_videos(self, video_csv_path, include_thumbpath=False) -> Iterable[VidType]:
+        return self._add_videos(video_csv_path, include_thumbpath=include_thumbpath)
 
     def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str, Union[str, None]]]:
         select_str = "SELECT vid, vpath"
@@ -483,9 +485,13 @@ class BasicStorageManager(AbstractStorageManager):
         base_query = """
             SELECT model_type, model_path, labels, feature_name, f1_threshold, mid
             FROM models
-            WHERE feature_name=?
         """
-        query_parameters = [feature_name]
+        if feature_name is not None:
+            base_query += " WHERE feature_name=?"
+            query_parameters = [feature_name]
+        else:
+            query_parameters = []
+
         if ignore_labels:
             # Filter to rows where labels does not contain any of the ignored labels. These rows will have
             # the same labels length after filtering out the ignored labels.
@@ -615,6 +621,10 @@ class BasicStorageManager(AbstractStorageManager):
         values = ','.join(values)
         self.get_cursor().execute(query.format(values=values), parameters)
 
+    def get_vids_with_predictions(self, mid) -> List[VidType]:
+        conn = self.get_cursor(read_only=True)
+        rows = conn.execute("SELECT DISTINCT vid FROM predictions WHERE mid=?", [mid]).fetchall()
+        return [row[0] for row in rows]
 
     def get_predictions(self, mid, labels_and_features):
         conn = self.get_cursor(read_only=True)

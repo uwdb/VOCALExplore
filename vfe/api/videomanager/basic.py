@@ -1,4 +1,6 @@
+from functools import partial
 import logging
+import os
 from typing import Iterable, Tuple, Union, List
 
 from vfe.core import video
@@ -53,3 +55,22 @@ class BasicVideoManager(AbstractVideoManager):
             if count and count % 20 == 0:
                 logger.debug(f'Added audio to {count}/{len(vpaths)}')
             video.add_silent_audio(vpath)
+
+    def transcode_videos(self, base_dir, output_dir, target_extension, scheduler, prepare_fn, callback_fn):
+        for dirpath, dirnames, filenames in os.walk(base_dir):
+            for file in filenames:
+                if not file.endswith(target_extension):
+                    continue
+
+                # Call this now instead of when the task is scheduled so that we know how many are queued.
+                prepare_fn()
+                scheduler.schedule(
+                    'transcode',
+                    partial(
+                        video.transcode_video,
+                        path=os.path.join(dirpath, file),
+                        output_dir=output_dir,
+                        base_dir=base_dir,
+                    ),
+                    callback=callback_fn,
+                )

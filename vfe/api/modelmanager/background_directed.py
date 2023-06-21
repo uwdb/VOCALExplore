@@ -194,32 +194,38 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
 
     def get_predictions_async(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> None:
         feature_names = core.typecheck.ensure_list(feature_names)
+        feature_names_str = core.typecheck.ensure_str(feature_names)
         nlabeled = len(self.storagemanager.get_vids_with_labels())
-        if not nlabeled:
+        model = self.storagemanager.get_model_info(feature_names_str)
+        if not nlabeled and not model:
             return
 
         # This isn't ideal to wait for a new model, but currently the bottleneck is inference
         # not training, so live with this for now.
-        feature_names_str = core.typecheck.ensure_str(feature_names)
         if (not allow_stale_predictions and self._newlabels and feature_names_str not in self._features_trained_on_newlabels) \
                 or (self.storagemanager.get_model_info(feature_names_str) is None):
             self._wait_for_model(feature_names)
+            model = self.storagemanager.get_model_info(feature_names_str)
             self._features_trained_on_newlabels.add(feature_names_str)
 
         # Operate in batches of videos. This way if we have to wait for feature extraction,
         # we'll start getting predictions for some videos instead of waiting to process
         # the entire dataset.
+        # Operate over missing vids.
+        vids_with_predictions = self.storagemanager.get_vids_with_predictions(model.mid)
+        missing_vids = list(set(vids) - set(vids_with_predictions))
         batch_size = 100
-        for i in range(0, len(vids), batch_size):
-            if self._asyncfm and vids is not None:
+        for i in range(0, len(missing_vids), batch_size):
+            batch = missing_vids[i: i+batch_size]
+            if self._asyncfm and missing_vids is not None:
                 self.featuremanager.extract_features_async(
                     feature_names,
-                    vids[i: i+batch_size],
+                    batch,
                     priority=priority,
                     callback=partial(
                         self._predict_model_for_feature,
                         feature_names=feature_names,
-                        vids=vids[i: i+batch_size],
+                        vids=batch,
                         start=start,
                         end=end,
                         ignore_labeled=ignore_labeled,

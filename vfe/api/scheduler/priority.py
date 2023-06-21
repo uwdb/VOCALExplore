@@ -149,7 +149,11 @@ class PriorityScheduler(AbstractScheduler):
 
             (
                 self._lowp_gpu_pool if used_gpu else self._pool
-            ).apply_async(fn, callback=self._handle_task_done(callback, used_gpu))
+            ).apply_async(
+                fn,
+                callback=self._handle_task_done(callback, used_gpu),
+                error_callback=self._handle_task_error(callback, used_gpu)
+            )
 
     def _handle_task_done(self, callback, used_gpu):
         def wrapped_callback(*args):
@@ -162,6 +166,20 @@ class PriorityScheduler(AbstractScheduler):
                 self._cpu_available_event.set()
             if callback is not None:
                 callback(*args)
+        return wrapped_callback
+
+    def _handle_task_error(self, callback, used_gpu):
+        def wrapped_callback(error):
+            self.logger.exception(f"Error in task: {error}")
+            with self._resource_lock:
+                self._used_resources['cpu'] -= 1
+                if used_gpu:
+                    self._used_resources['gpu'] -= 1
+                assert self._used_resources['cpu'] >= 0, f'{self._used_resources["cpu"]}'
+                assert self._used_resources['gpu'] >= 0, f'{self._used_resources["gpu"]}'
+                self._cpu_available_event.set()
+            if callback is not None:
+                callback()
         return wrapped_callback
 
     def _schedule_highp_gpu(self, name, fn, callback=None):

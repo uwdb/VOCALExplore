@@ -328,7 +328,6 @@ class AbstractPytorchModelManager(AbstractModelManager):
             self.model_info = model_info
 
         def write_on_batch_end(self, trainer, pl_module, prediction, batch_indices, batch, batch_idx, dataloader_idx):
-            logger.debug('In write_on_batch_end')
             batch_indices = batch[1]
             if len(prediction.size()) > 2:
                 prediction = prediction.squeeze()
@@ -399,7 +398,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
              return None
         tosave_feature_name = core.typecheck.ensure_str(feature_names)
         assert model_info.feature_name == tosave_feature_name, f'Error trying to use model trained with feature {model_info.feature_name} when specified feature {tosave_feature_name}'
-        self.logger.debug(f'Performing predictions using model ({model_info.mid}) at path {model_info.model_path}, predicts labels {model_info.model_labels}, f1 threshold {model_info.f1_threshold:0.2f}')
+        self.logger.debug(f'Performing predictions using model ({model_info.mid}) at path {model_info.model_path}, predicts labels {model_info.model_labels}, f1 threshold {model_info.f1_threshold or -1:0.2f}')
 
         existing_predictions = self.storagemanager.get_predictions(model_info.mid, filtered_features)
         # Create two subsets:
@@ -412,7 +411,9 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         if run_async:
             if not len(filtered_features_for_inference):
+                logger.debug(f'Returning before scheduling predict because no predictions are missing for vids {min(vids)}-{max(vids)}')
                 return
+            logger.debug(f'Scheduling async prediction task for vids {min(vids)}-{max(vids)}')
             self.scheduler.schedule(
                 'predict',
                 partial(

@@ -125,13 +125,19 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
         async_step=ve_options['async_bandit'],
     )
 
+    eager_feature_extraction_batch_size = (
+        ve_options.get('eager_feature_extraction_unlabeled_batch_size', 10)
+        if eager_feature_extraction_unlabeled
+        else 0
+    )
+
     alm = MultiFeatureActiveLearningManager(
         fm, mm, vm, explorer, feature_names, scheduler,
         strategy=FeatureEvalStrategy.RISINGBANDIT,
         strategy_kwargs=strategy_kwargs,
         eager_feature_extraction_labeled=ve_options['eager_feature_extraction_labeled'],
         eager_model_training=ve_options['eager_model_training'],
-        eager_feature_extraction_unlabeled=eager_feature_extraction_unlabeled,
+        eager_feature_extraction_unlabeled=eager_feature_extraction_batch_size,
         thumbnail_dir=thumbnail_dir,
     )
     return alm

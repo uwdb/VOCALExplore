@@ -4,9 +4,11 @@ import functools
 import logging
 import numpy as np
 import os
+import pandas as pd
 import queue
 import re
 import shutil
+from tempfile import NamedTemporaryFile
 import time
 import threading
 import torch
@@ -219,6 +221,69 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         # Expect video_csv_path to have a header of: path,start,duration
         return self.storagemanager.add_videos(video_csv_path)
 
+    @staticmethod
+    def _add_videos(vpaths, thumbnail_dir):
+        for vpath in vpaths:
+            core.video.save_thumbnail(vpath, thumbnail_dir)
+
+    def add_videos_from_dir(self, base_dir, thumbnail_dir, prepare_fn, callback_fn) -> None:
+        vpaths = []
+        vstart = None
+
+        for dirpath, dirnames, filenames in os.walk(base_dir):
+            for file in filenames:
+                if not file.endswith(".mp4"):
+                    continue
+
+                vpath = os.path.join(dirpath, file)
+                vpaths.append(vpath)
+                # Prepare twice: once for the thumbnail, and once for the video metadata.
+                prepare_fn()
+                prepare_fn()
+
+        # Schedule all of the feature extraction tasks.
+        for i in range(0, len(vpaths), 50):
+            batch = vpaths[i : i+50]
+            def wrapped_callback(*args, callback_fn=None, n=None):
+                for _ in range(n):
+                    callback_fn(*args)
+
+            self.scheduler.schedule(
+                'extract-thumbnail',
+                functools.partial(
+                    self._add_videos,
+                    vpaths=batch,
+                    thumbnail_dir=thumbnail_dir,
+                ),
+                callback=functools.partial(wrapped_callback, callback_fn=callback_fn, n=len(batch))
+            )
+
+        # Add all of the metadata to the database.
+        # Add a prepare/callback for each batch so we are done once everything
+        # is in the database.
+        with NamedTemporaryFile(mode="w+", suffix=".csv") as video_csv:
+            rows = []
+            for vpath in vpaths:
+                duration = core.video.get_video_duration(vpath)
+                thumbnail_path = core.video.get_thumbnail_path(vpath, thumbnail_dir)
+                # Callback now that we have the duration. It's not actually done since
+                # we still have to add it to the database, but it's close.
+                callback_fn()
+
+                # Keep track of data for bulk insert.
+                rows.append((vpath, vstart, duration, thumbnail_path))
+                if len(rows) > 2000:
+                    df = pd.DataFrame.from_records(rows, columns=["path", "start", "duration", "thumbpath"])
+                    df.to_csv(video_csv.name)
+                    self.storagemanager.add_videos(video_csv.name, include_thumbpath=True)
+                    rows = []
+
+            if rows:
+                df = pd.DataFrame.from_records(rows, columns=["path", "start", "duration", "thumbpath"])
+                df.to_csv(video_csv.name)
+                self.storagemanager.add_videos(video_csv.name, include_thumbpath=True)
+
+
     def get_features(self, feature_names: Union[str, List[str]], vids, priority: Priority=Priority.DEFAULT) -> FeatureSet:
         feature_names = core.typecheck.ensure_list(feature_names)
 
@@ -229,7 +294,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         if not isinstance(vids, np.ndarray):
             vids = np.array(vids)
 
-        self.logger.debug(f'Requested features for {len(vids)} vids: {vids if len(vids) < 500 else "(too many to print)"}')
+        self.logger.debug(f'Requested features for {len(vids)} vids: {vids if len(vids) < 100 else "(too many to print)"}')
         # _extract_features_async automatically filters out already-done vids.
         for feature_name in feature_names:
             self._extract_features_async(feature_name, vids, priority=priority)

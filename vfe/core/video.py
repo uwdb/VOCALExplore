@@ -1,5 +1,7 @@
 import cv2
+import ffmpeg
 import fractions
+from functools import partial
 import logging
 import os
 from pathlib import Path
@@ -10,7 +12,7 @@ import shlex
 
 logger = logging.getLogger(__name__)
 
-def get_video_duration(video_path):
+def get_video_duration_ffmpeg(video_path):
     result = subprocess.run(shlex.split(
         (
             'ffprobe -hide_banner -v error '
@@ -23,8 +25,16 @@ def get_video_duration(video_path):
     )
     return float(result.stdout)
 
+def get_video_duration(video_path):
+    container = av.open(video_path)
+    video_stream = container.streams.video[0]
+    return float(video_stream.duration * video_stream.time_base)
+
+def get_thumbnail_path(video_path, thumbnail_dir) -> str:
+    return str(Path(thumbnail_dir) / Path(video_path).with_suffix('.jpg').name)
+
 def save_thumbnail(video_path, thumbnail_dir) -> str:
-    thumbnail_path = str(Path(thumbnail_dir) / Path(video_path).with_suffix('.jpg').name)
+    thumbnail_path = get_thumbnail_path(video_path, thumbnail_dir)
     if os.path.exists(thumbnail_path):
         return thumbnail_path
 
@@ -93,3 +103,33 @@ def get_clips(video_path, sequence_length, stride, step):
         clips.append((start_time, stop_time))
         sequence_start = sequence_start + step
     return clips
+
+def transcode_video(path, output_dir, base_dir):
+    base, tail = os.path.split(path)
+    name, _ = os.path.splitext(tail)
+    output_video_dir = Path(output_dir) / Path(base).relative_to(Path(base_dir))
+    output_path = os.path.join(output_video_dir, f'{name}.mp4')
+    if os.path.exists(output_path):
+        return
+
+    if not os.path.exists(os.path.dirname(output_path)):
+        os.makedirs(os.path.dirname(output_path))
+
+    try:
+        stream = ffmpeg.input(path)
+        (ffmpeg
+            .output(
+                stream.video,
+                stream.audio,
+                output_path,
+                vcodec='h264_nvenc',
+                acodec='aac')
+            .overwrite_output()
+            .run()
+        )
+    except ffmpeg.Error as e:
+        print(f'Exception {e.__class__} occurred: {e.stderr}')
+        return
+    except Exception as e:
+        print(f'Exception: {e}')
+        return
