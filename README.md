@@ -12,7 +12,7 @@ The `main` branch extends the experimental implementation to serve as the backen
   </picture>
 ](https://db.cs.washington.edu/projects/visualworld)
 
-_Clicking on the preview image will navigate a demonstration video on the UWDB website._
+_Clicking on the preview image will navigate to a demonstration video on the UWDB website._
 
 ## Project structure
 `vfe/` contains the implementation of VOCALExplore. `vfe/api` houses the various managers and task scheduler, and the rest of the subdirectories implement utilities.
