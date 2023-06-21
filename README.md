@@ -8,7 +8,7 @@ The `main` branch extends the experimental implementation to serve as the backen
 
 [
   <picture>
-    <img src="https://github.com/uwdb/VOCALExplore/assets/44246059/0dde9b77-87b6-4681-add0-4e3b1fb4f767" width="50%">
+    <img src="https://github.com/uwdb/VOCALExplore/assets/44246059/531206d3-9a89-4449-939a-242f167d9d27" width="75%">
   </picture>
 ](https://db.cs.washington.edu/projects/visualworld)
 
