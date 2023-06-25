@@ -15,6 +15,7 @@ ModelInfo = namedtuple('ModelInfo', ['model_type', 'model_path', 'model_labels',
 ClipInfo = namedtuple('ClipInfo', ['vid', 'vstart', 'start_time', 'end_time'])
 ClipInfoWithPath = namedtuple('ClipInfoWithPath', [*ClipInfo._fields, 'vpath', 'thumbpath'], defaults=(None,))
 AnyClipInfo = Union[ClipInfo, ClipInfoWithPath, LabelInfo] # Anything with values for vid, start_time, end_time.
+PredictionRow = namedtuple('PredictionRow', ['vid', 'start_time', 'end_time', 'pred_dict'])
 
 def clipinfo_to_clipset(clipinfos: Iterable[AnyClipInfo]) -> ClipSet:
     return ds.dataset(

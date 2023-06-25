@@ -483,7 +483,7 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         # Otherwise we'll just be searching over the selection that we've performed inference on for some reason.
         feature_names = self._get_best_features()
         if predictions:
-            self.modelmanager.get_predictions(feature_names=feature_names, allow_stale_predictions=True, priority=UserPriority.priority)
+            self.modelmanager.ensure_predictions(feature_names=feature_names, allow_stale_predictions=True, priority=UserPriority.priority)
             # Get the model ID that was used to make predictions. Query for predictions from just this latest model.
             mid = self.modelmanager.latest_prediction_mid(feature_names)
         else:

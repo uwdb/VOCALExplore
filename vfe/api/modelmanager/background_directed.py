@@ -234,6 +234,34 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
                     )
                 )
 
+    def ensure_predictions(self, *, vids=None, feature_names: Union[str, List[str]]=None, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> None:
+        # This first part matches get_predictions_async.
+        feature_names = core.typecheck.ensure_list(feature_names)
+        feature_names_str = core.typecheck.ensure_str(feature_names)
+        nlabeled = len(self.storagemanager.get_vids_with_labels())
+        model = self.storagemanager.get_model_info(feature_names_str)
+        if not nlabeled and not model:
+            return
+
+        # This isn't ideal to wait for a new model, but currently the bottleneck is inference
+        # not training, so live with this for now.
+        if (not allow_stale_predictions and self._newlabels and feature_names_str not in self._features_trained_on_newlabels) \
+                or (self.storagemanager.get_model_info(feature_names_str) is None):
+            self._wait_for_model(feature_names)
+            model = self.storagemanager.get_model_info(feature_names_str)
+            self._features_trained_on_newlabels.add(feature_names_str)
+
+        vids_with_predictions = self.storagemanager.get_vids_with_predictions(model.mid)
+        if vids is None:
+            vids = self.storagemanager.get_all_vids()
+        missing_vids = list(set(vids) - set(vids_with_predictions))
+        if missing_vids:
+            self._predict_model_for_feature(feature_names, vids, start, end, priority=priority)
+        else:
+            # Set _feature_to_last_prediction_mid even if we aren't performing inference so that
+            # we know what mid the cached predictions came from.
+            self._feature_to_last_prediction_mid[feature_names_str] = model.mid
+
     def get_predictions(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:
         feature_names = core.typecheck.ensure_list(feature_names)
         # len wouldn't work if get_vids_with_labels returned a map rather than a list.

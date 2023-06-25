@@ -5,7 +5,9 @@ from functools import lru_cache
 import logging
 import numpy as np
 import os
+import pyarrow as pa
 import signal
+import sqlite3
 import threading
 import traceback
 from typing import Iterable, List, Tuple, Dict, Union
@@ -13,7 +15,7 @@ from typing import Iterable, List, Tuple, Dict, Union
 from vfe import core
 from vfe.featurestore.parquet import ParquetFeatureStore as FeatureStore
 
-from .abstract import AbstractStorageManager, VidType, FeatureSet, LabeledFeatureSet, LabelInfo, ClipSet, LabeledClipSet, LabelSet, ModelInfo, ClipInfo, ClipInfoWithPath
+from .abstract import AbstractStorageManager, VidType, FeatureSet, LabeledFeatureSet, LabelInfo, ClipSet, LabeledClipSet, LabelSet, ModelInfo, ClipInfo, ClipInfoWithPath, PredictionRow
 
 def add_delta(dt, seconds):
     if isinstance(dt, datetime.datetime):
@@ -28,9 +30,11 @@ class BasicStorageManager(AbstractStorageManager):
         self.db_dir = db_dir
         self._con = None
         self._cursors = {}
+        self._sqlite_connections = {}
         self._con_type = read_only
         if not read_only:
             self._run_setup_stmts()
+
         self.logger = logging.getLogger(__name__)
 
         # Features.
@@ -50,6 +54,10 @@ class BasicStorageManager(AbstractStorageManager):
     def metadata_db_path(self):
         return os.path.join(self.db_dir, 'annotations.duckdb')
 
+    @property
+    def predictions_db_path(self):
+        return os.path.join(self.db_dir, 'predictions.db')
+
     def get_cursor(self, read_only=False):
         # DuckDB's documentation seems to indicate that connections are threadsafe, but in practice
         # it throws an error: RuntimeError: DuckDB objects created in a thread can only be used in that same thread.
@@ -62,6 +70,12 @@ class BasicStorageManager(AbstractStorageManager):
         if thread_id not in self._cursors:
             self._cursors[thread_id] = self._con.cursor()
         return self._cursors[thread_id]
+
+    def get_sqlite_cursor(self, read_only=False):
+        thread_id = threading.get_ident()
+        if thread_id not in self._sqlite_connections:
+            self._sqlite_connections[thread_id] = sqlite3.connect(self.predictions_db_path)
+        return self._sqlite_connections[thread_id]
 
     def _close(self):
         self._con = None
@@ -129,20 +143,20 @@ class BasicStorageManager(AbstractStorageManager):
         """)
 
         # predictions table.
-        conn.execute("""
+        sqlite_cursor = self.get_sqlite_cursor()
+        sqlite_cursor.execute("""
             CREATE TABLE IF NOT EXISTS predictions(
-                mid BIGINT,
-                vid BIGINT,
-                start_time DECIMAL,
-                end_time DECIMAL,
-                label VARCHAR,
-                probability DECIMAL,
-                FOREIGN KEY (mid) REFERENCES models(mid),
-                FOREIGN KEY (vid) REFERENCES video_metadata(vid)
+                mid INTEGER,
+                vid INTEGER,
+                start_time DECIMAL(10,5),
+                end_time DECIMAL(10,5),
+                label TEXT,
+                probability REAL,
+                -- We can't actually specify these foreign keys because it's a different database.
+                -- FOREIGN KEY (mid) REFERENCES models(mid),
+                -- FOREIGN KEY (vid) REFERENCES video_metadata(vid)
+                UNIQUE(mid, vid, start_time, end_time, label, probability)
             )
-        """)
-        conn.execute("""
-            create unique index if not exists predictions_unique on predictions(mid, vid, start_time, end_time, label, probability)
         """)
 
     def _add_videos(self, video_csv_path, include_thumbpath=False):
@@ -619,31 +633,37 @@ class BasicStorageManager(AbstractStorageManager):
                 parameters.extend(vals)
 
         values = ','.join(values)
-        self.get_cursor().execute(query.format(values=values), parameters)
+        # Use a context manager to commit after adding values.
+        conn = self.get_sqlite_cursor()
+        with conn:
+            conn.execute(query.format(values=values), parameters)
 
     def get_vids_with_predictions(self, mid) -> List[VidType]:
-        conn = self.get_cursor(read_only=True)
+        conn = self.get_sqlite_cursor(read_only=True)
         rows = conn.execute("SELECT DISTINCT vid FROM predictions WHERE mid=?", [mid]).fetchall()
         return [row[0] for row in rows]
 
     def get_predictions(self, mid, labels_and_features):
-        conn = self.get_cursor(read_only=True)
-        # select * exclude (row_number) from (select *, row_number() over (partition by mid, vid, start_time, end_time, label, probability) as row_number from predictions) where row_number=1
-        return conn.execute("""
-            WITH unique_preds AS (
-                select * exclude (row_number) from (select *, row_number() over (partition by mid, vid, start_time, end_time, label, probability) as row_number from predictions) where row_number=1
-            ), grouped_preds AS (
-                select mid, vid, start_time, end_time, map(list(label), list(probability)) as pred_dict from unique_preds group by mid, vid, start_time, end_time
-            )
-            SELECT f.*,
-                to_json(p.pred_dict) as pred_dict
-            FROM labels_and_features f
-            LEFT OUTER JOIN grouped_preds p
-            ON p.mid=?
-                AND f.vid=p.vid
-                AND f.start_time::DECIMAL(18,3)=p.start_time::DECIMAL(18,3)
-                AND f.end_time::DECIMAL(18,3)=p.end_time::DECIMAL(18,3)
-        """, [mid]).arrow()
+        conn = self.get_sqlite_cursor(read_only=True)
+        vids = labels_and_features['vid'].to_pylist()
+        vid_params = ', '.join('?' for _ in vids)
+        rows = conn.execute(f"""
+            SELECT vid, start_time, end_time, JSON_GROUP_OBJECT(label, probability) as pred_dict
+            FROM predictions
+            WHERE mid=?
+                AND vid IN ({vid_params})
+            GROUP BY vid, start_time, end_time
+        """, [mid, *vids]).fetchall()
+        tupled_rows = [pr._asdict() for pr in map(PredictionRow._make, rows)]
+        if tupled_rows:
+            return pa.Table.from_pylist(tupled_rows)
+        else:
+            return pa.table({
+                "vid": [],
+                "start_time": [],
+                "end_time": [],
+                "pred_dict": [],
+            })
 
     def search_videos(self, date_range=None, labels=None, predictions=None, prediction_confidence=None, mid=None) -> List[ClipInfo]:
         params = []
@@ -663,18 +683,24 @@ class BasicStorageManager(AbstractStorageManager):
                 WHERE label IN ({joined_labels})
             )"""
         if predictions:
+            # Get vids. Then add them to the where clause.
             assert mid is not None
             joined_predictions = ", ".join(["?" for _ in predictions])
-            params.extend(predictions)
-            params.append(prediction_confidence)
-            params.append(mid)
-            where_clause += f"""AND vid IN (
-                SELECT vid
+            pred_params = []
+            # Copy predictions because otherwise the typing is weird.
+            pred_params.extend(predictions)
+            pred_params.append(prediction_confidence)
+            pred_params.append(mid)
+            pred_vids = self.get_sqlite_cursor(read_only=True).execute(f"""
+                SELECT DISTINCT vid
                 FROM predictions
                 WHERE label IN ({joined_predictions})
                     AND probability > ?
-                    AND mid=?
-            )"""
+                    AND mid = ?
+            """, pred_params).fetchall()
+
+            vids = ", ".join(str(row[0]) for row in pred_vids)
+            where_clause += f"""AND vid IN ({vids})"""
 
         query = f"""
             SELECT DISTINCT v.vid, vstart, 0 as clip_start, vduration as clip_end

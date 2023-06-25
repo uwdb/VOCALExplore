@@ -16,7 +16,6 @@ from torch.utils import data
 from typing import Iterable, Dict, Union, Callable, List
 
 from vfe import core
-from vfe.core.timing import logtime
 from vfe import models
 
 from vfe.api.featuremanager import AbstractFeatureManager
@@ -405,9 +404,12 @@ class AbstractPytorchModelManager(AbstractModelManager):
         # One without predictions that is run through the model.
         # One with predictions that we will transform into the expected types.
         # Concat these before returning.
-        missing_predictions = pc.is_null(existing_predictions['pred_dict'])
-        filtered_features_for_inference = existing_predictions.filter(missing_predictions)
-        filtered_features_with_predictions = existing_predictions.filter(pc.invert(missing_predictions))
+        missing_vids = set(filtered_features['vid'].to_pylist()) - set(existing_predictions['vid'].to_pylist())
+        missing_predictions = pc.is_in(filtered_features['vid'], pa.array(missing_vids))
+        # For performing inference, we need the raw features.
+        filtered_features_for_inference = filtered_features.filter(missing_predictions)
+        # For vids with predictions, we can just use what we got from the storage manager.
+        filtered_features_with_predictions = existing_predictions
 
         if run_async:
             if not len(filtered_features_for_inference):
@@ -453,6 +455,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
             y_pred_probs = None
 
         # Concatenate y_pred_probs with filtered_features_with_predictions.
+        common_columns = ["vid", "start_time", "end_time"]
         if len(filtered_features_with_predictions):
             predictions = [json.loads(preds) for preds in filtered_features_with_predictions['pred_dict'].to_pylist()]
             y_pred_probs_existing = torch.stack([torch.Tensor([pred[label] for label in model_info.model_labels]) for pred in predictions])
@@ -463,9 +466,9 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = torch.cat([y_pred_probs, y_pred_probs_existing])
             else:
                 y_pred_probs = y_pred_probs_existing
-            filtered_features = pa.concat_tables([filtered_features_for_inference, filtered_features_with_predictions])
+            filtered_features = pa.concat_tables([filtered_features_for_inference.select(common_columns), filtered_features_with_predictions.select(common_columns)])
         else:
-            filtered_features = filtered_features_for_inference
+            filtered_features = filtered_features_for_inference.select(common_columns)
 
         # Now we're returning filtered_features with an extra 'pred_dict' column, but I think all of the callers will just ignore it.
         return y_pred_probs, model_info.model_labels, filtered_features
