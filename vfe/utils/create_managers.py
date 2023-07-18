@@ -66,10 +66,10 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
     if thumbnail_dir:
         core.filesystem.create_dir(thumbnail_dir)
 
-    sm = StorageManager(db_dir=db_dir, features_dir=features_dir, models_dir=models_dir)
+    sm = StorageManager(db_dir=db_dir, features_dir=features_dir, models_dir=models_dir, full_overlap=ve_options.get('label_fully_overlaps_feature', True))
     vm = VideoManager(sm)
     scheduler = PriorityScheduler(cpus=ve_options['cpus'], gpus=ve_options['gpus'], suspend_lowp=ve_options['suspend_lowp'])
-    fm = BackgroundAsyncFeatureManager(sm, scheduler, batch_size=8)
+    fm = BackgroundAsyncFeatureManager(sm, scheduler, batch_size=8, async_batch_size=ve_options.get('async_batch_size', -1))
     mm = BackgroundAsyncModelManager(sm, fm, scheduler=scheduler, min_trainsize=ve_options['min_labels'], device=ve_options['mm_device'], parallel_kfold=(not ve_options['serial_kfold']))
 
     # Set up acquisition function selection.

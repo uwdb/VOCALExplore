@@ -248,9 +248,11 @@ class AbstractPytorchModelManager(AbstractModelManager):
         unique_labels = set([l.label for l in all_labels])
         return labels_and_features, unique_labels
 
-    def _train_model(self, feature_names: Union[str, List[str]], save=True, labels=None, train_kwargs={}):
-        labels_and_features, unique_labels = self._get_all_labels_and_features(feature_names)
+    def _train_model(self, feature_names: Union[str, List[str]], save=True, labels=None, train_kwargs={}, vids=None):
+        labels_and_features, unique_labels = self._get_all_labels_and_features(feature_names, vids=vids)
         labeled_vids = self.storagemanager.get_vids_with_labels()
+        if vids is not None:
+            labeled_vids = np.array([l for l in labeled_vids if l in vids])
         self.logger.debug(f'Training model using clips from {len(labeled_vids)} vids. Labels: {unique_labels}')
         self.logger.debug(f'Training set size: {len(labels_and_features)}')
         self.logger.debug(f'Labels in table: {set(labels_and_features["labels"].to_pylist())}')
@@ -364,7 +366,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         except Exception as e:
             logger.exception("Exception: {e}")
 
-    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT, run_async=False):
+    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT, run_async=False, cache_predictions=True):
         if vids is not None:
             features = self.featuremanager.get_features(feature_names, np.array(vids), priority=priority)
         else:
@@ -449,13 +451,14 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = y_pred_probs.squeeze()
             self.logger.debug('Got predictions')
 
-            self.logger.debug(f'Saving predictions for model {model_info.mid}')
-            self.storagemanager.add_predictions(model_info.mid, probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
+            if cache_predictions:
+                self.logger.debug(f'Saving predictions for model {model_info.mid}')
+                self.storagemanager.add_predictions(model_info.mid, probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
         else:
             y_pred_probs = None
 
         # Concatenate y_pred_probs with filtered_features_with_predictions.
-        common_columns = ["vid", "start_time", "end_time"]
+        common_columns = ["vid", "start_time", "end_time", "labels"]
         if len(filtered_features_with_predictions):
             predictions = [json.loads(preds) for preds in filtered_features_with_predictions['pred_dict'].to_pylist()]
             y_pred_probs_existing = torch.stack([torch.Tensor([pred[label] for label in model_info.model_labels]) for pred in predictions])
@@ -466,6 +469,14 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = torch.cat([y_pred_probs, y_pred_probs_existing])
             else:
                 y_pred_probs = y_pred_probs_existing
+
+            # Add labels to filtered_featueres_with_predictions.
+            # Otherwise it only has vid, start_time, end_time, and pred_dict.
+            filtered_features_with_predictions = duckdb.connect().execute("""
+                SELECT p.*, ff.labels
+                FROM filtered_features_with_predictions p, filtered_features ff
+                WHERE p.vid=ff.vid AND p.start_time=ff.start_time AND p.end_time=ff.end_time
+            """).arrow()
             filtered_features = pa.concat_tables([filtered_features_for_inference.select(common_columns), filtered_features_with_predictions.select(common_columns)])
         else:
             filtered_features = filtered_features_for_inference.select(common_columns)
@@ -492,13 +503,13 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async)
 
-    def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1):
+    def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1, include_none=False, cache_predictions=True):
         # Returns dictionary with keys:
         #   nclasses, n_pred, pred_mAP, pred_avgprecision_<class>
         # This is weird ... we should probably just be storing a list of features in the model table.
         # If '+' is in the feature name, we assume it's a combination of features. Otherwise, we assume it's either a string or a list of features.
         feature_names = model_info.feature_name.split('+') if '+' in model_info.feature_name else model_info.feature_name
-        y_pred_probs, model_labels, labels_and_features = self._predict_model(model_info, feature_names=feature_names, vids=vids, sample_from_validation=sample_from_validation)
+        y_pred_probs, model_labels, labels_and_features = self._predict_model(model_info, feature_names=feature_names, vids=vids, sample_from_validation=sample_from_validation, cache_predictions=cache_predictions)
         if y_pred_probs.dim() == 1:
             y_pred_probs = y_pred_probs.unsqueeze(dim=1)
 
@@ -506,8 +517,14 @@ class AbstractPytorchModelManager(AbstractModelManager):
         _, to_multilabel = models.to_multilabel_gen(labels)
         true_labels = labels_and_features['labels'].to_numpy()
         labeled_idxs = np.where(~np.isin(true_labels, ['none', *ignore_labels]))[0]
+        if include_none:
+            labeled_idxs = np.arange(len(labels_and_features))
+        else:
+            labeled_idxs = np.where(~np.isin(true_labels, ['none', *ignore_labels]))[0]
+
         y_true = to_multilabel(true_labels[labeled_idxs])
         y_pred_probs = y_pred_probs[labeled_idxs]
+        true_labels = true_labels[labeled_idxs]
         assert y_pred_probs.shape == y_true.shape, f'{y_pred_probs.shape} != {y_true.shape}'
         _warn_for_unlabeled(self.logger, true_labels[labeled_idxs], '_model_perf')
 
@@ -515,16 +532,18 @@ class AbstractPytorchModelManager(AbstractModelManager):
             # Assert that each vid has one label.
             vids = labels_and_features['vid'].to_numpy()[labeled_idxs]
             groups = pd.Series(true_labels).groupby(vids)
-            if groups.nunique().max() > 1:
+            if False and groups.nunique().max() > 1:
                 self.logger.warn('_model_perf was called with groupby_vid, but some vids have multiple labels. Computing results without grouping.')
             else:
                 y_shape = (len(groups.indices), y_true.shape[1])
                 y_true_grouped = np.zeros(y_shape)
                 y_pred_grouped = torch.zeros(y_shape)
                 for i, (vid, indices) in enumerate(groups.indices.items()):
-                    y_true_grouped[i] = y_true[indices[0]] # All rows will have the same label, so we can pick one.
-                    y_pred_grouped[i] = torch.mean(y_pred_probs[indices], dim=0)
-                y_true = y_true_grouped
+                    # If there are multiple labels for a video, create y_true such that there is a 1 for each one.
+                    y_true_grouped[i] = np.max(y_true[indices], axis=0)
+                    # y_true[indices[0]] # All rows will have the same label, so we can pick one.
+                    y_pred_grouped[i] = torch.max(y_pred_probs[indices], dim=0).values
+                y_true = y_true_grouped.astype(int)
                 y_pred_probs = y_pred_grouped
 
         results = models.AbstractStrategy._results_for_split('pred', y_true, None, y_pred_probs, labels=labels, multilabel_threshold=model_info.f1_threshold)

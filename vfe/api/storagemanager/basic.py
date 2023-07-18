@@ -24,10 +24,11 @@ def add_delta(dt, seconds):
         return dt + np.timedelta64(seconds, 's')
 
 class BasicStorageManager(AbstractStorageManager):
-    def __init__(self, db_dir, features_dir, models_dir, read_only=False, fid_offset=0):
+    def __init__(self, db_dir, features_dir, models_dir, read_only=False, fid_offset=0, full_overlap=True):
         # Metadata and annotations.
         # Initialize db_dir, _con, _con_type before running setup statements.
         self.db_dir = db_dir
+        self.full_overlap = full_overlap
         self._con = None
         self._cursors = {}
         self._sqlite_connections = {}
@@ -174,7 +175,7 @@ class BasicStorageManager(AbstractStorageManager):
             SELECT vid
             FROM video_metadata
         """).fetchnumpy()['vid'].tolist()) # tolist to convert from numpy type to python type.
-        extra_select = ", thumbpath" if include_thumbpath else ""
+        extra_select = ", thumbpath" if include_thumbpath else ", NULL"
         conn.execute(f"""
             INSERT INTO video_metadata
             SELECT nextval('vid_seq') vid, path, start, duration {extra_select}
@@ -418,7 +419,7 @@ class BasicStorageManager(AbstractStorageManager):
 
     def get_labels_for_features(self, featureset: FeatureSet, ignore_labels=[]) -> LabeledFeatureSet:
         conn = self.get_cursor(read_only=True)
-        return self.featurestore.get_labels(featureset, conn, adjust_feature_time=False, include_feature=True, ignore_labels=ignore_labels)
+        return self.featurestore.get_labels(featureset, conn, adjust_feature_time=False, include_feature=True, ignore_labels=ignore_labels, full_overlap=self.full_overlap)
 
     def get_labels_for_clips_aggregated_fulloverlap(self, clipset: ClipSet, full_overlap=True) -> LabeledClipSet:
         conn = self.get_cursor(read_only=True)
@@ -465,7 +466,7 @@ class BasicStorageManager(AbstractStorageManager):
 
     def get_features_for_clips(self, feature_names: Union[str, List[str]], clipset: ClipSet) -> FeatureSet:
         feature_names = core.typecheck.ensure_list(feature_names)
-        return self.featurestore.get_features_for_clips_concat(feature_names=feature_names, clips=clipset)
+        return self.featurestore.get_features_for_clips_concat(feature_names=feature_names, clips=clipset, full_overlap=self.full_overlap)
 
     def _add_model(self, model_type, feature_name, creation_time, batch_size, epochs, learningrate, ntrain, labels, model_path, labels_path, f1_threshold):
         conn = self.get_cursor()
@@ -616,14 +617,22 @@ class BasicStorageManager(AbstractStorageManager):
         """.format(start=realtime_start, end=realtime_end)).fetchall()
         return map(ClipInfoWithPath._make, results)
 
-    def add_predictions(self, mid, predictionset_list):
-        self.logger.debug(f'Adding {len(predictionset_list)} predictions')
-        # predictionset: (vid, start_time, end_time, predictions {label: prob,})
+    def _add_predictions(self, values, parameters):
         query = """
             INSERT INTO predictions
                 (mid, vid, start_time, end_time, label, probability)
             VALUES {values}
         """
+        values = ','.join(values)
+        conn = self.get_sqlite_cursor()
+        # Use a context manager to commit after adding values.
+        with conn:
+            conn.execute(query.format(values=values), parameters)
+
+    def add_predictions(self, mid, predictionset_list):
+        self.logger.debug(f'Adding {len(predictionset_list)} predictions')
+        # predictionset: (vid, start_time, end_time, predictions {label: prob,})
+
         parameters = []
         values = []
         for predictionset in predictionset_list:
@@ -632,11 +641,13 @@ class BasicStorageManager(AbstractStorageManager):
                 vals = (mid, predictionset.vid, predictionset.start_time, predictionset.end_time, label, probability)
                 parameters.extend(vals)
 
-        values = ','.join(values)
-        # Use a context manager to commit after adding values.
-        conn = self.get_sqlite_cursor()
-        with conn:
-            conn.execute(query.format(values=values), parameters)
+            # Try to avoid error "Too many sql parameters"
+            if len(parameters) > 10_000:
+                self._add_predictions(values, parameters)
+                parameters, values = [], []
+
+        if len(parameters):
+            self._add_predictions(values, parameters)
 
     def get_vids_with_predictions(self, mid) -> List[VidType]:
         conn = self.get_sqlite_cursor(read_only=True)

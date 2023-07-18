@@ -17,6 +17,7 @@ from typing import Iterable, Tuple, Union, List
 
 from vfe import core
 from vfe.core.logging import configure_logger
+from vfe.core.timing import logtime
 from vfe import datasets
 from vfe import features
 from vfe.features.modelcoordinator import ModelFeatureExtractorCoordinator
@@ -284,6 +285,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
                 self.storagemanager.add_videos(video_csv.name, include_thumbpath=True)
 
 
+    @logtime
     def get_features(self, feature_names: Union[str, List[str]], vids, priority: Priority=Priority.DEFAULT) -> FeatureSet:
         feature_names = core.typecheck.ensure_list(feature_names)
 
