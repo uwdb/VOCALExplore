@@ -61,6 +61,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         epochs=100,
         batch_size=32,
         learningrate=0.0002,
+        predict_on_none=False
     ):
         self.storagemanager = storagemanager
         self.featuremanager = featuremanager
@@ -77,6 +78,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self.model_type = models.ModelType.LINEAR
         self.learningrate = learningrate
         self.epochs = epochs
+        self.predict_on_none = predict_on_none
 
         self.ignore_labels = set()
 
@@ -84,11 +86,12 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self._feature_to_last_prediction_mid = {}
 
         # Async predictions.
-        # We can't pass the queue to the async function unless it comes from a Manager.
-        self._predictions_queue = self.scheduler.context().Manager().Queue() # Slow; starts a new process.
-        self._prediction_processing_thread = threading.Thread(group=None, target=self._handle_prediction_batch, args=(self._predictions_queue,), name='process-predictions')
-        self._prediction_processing_thread.daemon = True
-        self._prediction_processing_thread.start()
+        if self.scheduler:
+            # We can't pass the queue to the async function unless it comes from a Manager.
+            self._predictions_queue = self.scheduler.context().Manager().Queue() # Slow; starts a new process.
+            self._prediction_processing_thread = threading.Thread(group=None, target=self._handle_prediction_batch, args=(self._predictions_queue,), name='process-predictions')
+            self._prediction_processing_thread.daemon = True
+            self._prediction_processing_thread.start()
 
     def _handle_prediction_batch(self, predictions_queue):
         while True:
@@ -199,7 +202,35 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         X = np.vstack(labels_and_features['feature'].to_numpy())
         y = labels_and_features['labels'].to_numpy()
-        _, label_counts = np.unique(y, return_counts=True)
+
+        # Split y into multi-labels to handle the case where multiple labels overlap.
+        ordered_labels, to_multilabel = models.to_multilabel_gen((unique_labels))
+        y_transformed = to_multilabel(y)
+        label_counts = np.sum(y_transformed, axis=0)
+
+        # Filter out labels that have fewer than n_splits to avoid 0 f1s.
+        sufficient_labels = np.where(label_counts >= n_splits)[0]
+        ordered_labels = ordered_labels[sufficient_labels]
+        y_transformed_filtered = y_transformed[:, sufficient_labels]
+        # Pick rows with at least one label still.
+        per_vid_labels = np.sum(y_transformed_filtered, axis=1)
+        labeled_videos_idxs = np.where(per_vid_labels > 0)[0]
+        if len(labeled_videos_idxs) < n_splits:
+            logger.warn('Returning without checking label quality because after eliminating labels there are not enough examples')
+            return None
+
+        y_transformed_filtered = y_transformed_filtered[labeled_videos_idxs]
+        y = np.array(['_'.join(ordered_labels[np.where(y_row == 1)]) for y_row in y_transformed_filtered])
+        X = X[labeled_videos_idxs]
+
+        # Not great, but re-add these checks with the filtered X, y.
+        if len(X) <= n_splits \
+                or (len(sufficient_labels) <= n_splits and len(sufficient_labels) > 2): # I don't remember why the l(unique)<nsplits came from. Keep it for now and special-case for bears.
+            return None
+
+        if min_size > 0 and len(X) < min_size:
+            return None
+
         if max(label_counts) < n_splits:
             logger.warn(f'Reducing n_splits from {n_splits} to {max(label_counts)} because not enough examples of each class')
             n_splits = max(label_counts)
@@ -212,14 +243,16 @@ class AbstractPytorchModelManager(AbstractModelManager):
         else:
             kf = model_selection.StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
-        splits = kf.split(X, y=labels_and_features['labels'].to_numpy(), groups=labels_and_features['vid'].to_numpy())
+        # In multi-label case, we'll pick the first label to stratify on.
+        # splits = kf.split(X, y=np.argmax(y_transformed, axis=1), groups=labels_and_features['vid'].to_numpy())
+        splits = kf.split(X, y=np.argmax(y_transformed_filtered, axis=1), groups=labels_and_features['vid'].to_numpy()[labeled_videos_idxs])
         if keep_first:
             splits = [list(splits)[0]]
         eval_kwds = dict(
             X=X,
             y=y,
             feature_name=core.typecheck.ensure_str(feature_names),
-            unique_labels=unique_labels,
+            unique_labels=ordered_labels,
             model_type=model_type,
             batch_size=batch_size,
             learningrate=learningrate,
@@ -231,7 +264,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
             device=device,
         )
         if return_tasks:
-            return [functools.partial(AbstractPytorchModelManager.eval_splits, [split], **eval_kwds) for split in splits]
+            return [partial(AbstractPytorchModelManager.eval_splits, [split], **eval_kwds) for split in splits]
 
         results = AbstractPytorchModelManager.eval_splits(splits, **eval_kwds)
         return AbstractPytorchModelManager.postprocess_eval_split_results(results)
@@ -414,6 +447,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         filtered_features_with_predictions = existing_predictions
 
         if run_async:
+            assert self.scheduler, f"Cannot perform asynchronous predictions without a scheduler."
             if not len(filtered_features_for_inference):
                 logger.debug(f'Returning before scheduling predict because no predictions are missing for vids {min(vids)}-{max(vids)}')
                 return
@@ -516,12 +550,13 @@ class AbstractPytorchModelManager(AbstractModelManager):
         labels = model_info.model_labels
         _, to_multilabel = models.to_multilabel_gen(labels)
         true_labels = labels_and_features['labels'].to_numpy()
-        labeled_idxs = np.where(~np.isin(true_labels, ['none', *ignore_labels]))[0]
-        if include_none:
-            labeled_idxs = np.arange(len(labels_and_features))
-        else:
-            labeled_idxs = np.where(~np.isin(true_labels, ['none', *ignore_labels]))[0]
+        if not include_none and not self.predict_on_none:
+            if isinstance(ignore_labels, set):
+                ignore_labels.add('none')
+            else:
+                ignore_labels.append('none')
 
+        labeled_idxs = np.where(~np.isin(true_labels, [*ignore_labels]))[0]
         y_true = to_multilabel(true_labels[labeled_idxs])
         y_pred_probs = y_pred_probs[labeled_idxs]
         true_labels = true_labels[labeled_idxs]

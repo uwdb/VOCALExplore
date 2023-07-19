@@ -330,7 +330,8 @@ class ParquetFeatureStore(AbstractFeatureStore):
         # This doesn't need to be in parquet.py.
         # Inner join to ignore clips in clip_dataset without any labels.
         return dbcon.execute("""
-            SELECT a.vid,
+            SELECT a.aid as lid, -- match params of LabelInfo
+                a.vid,
                 CASE WHEN c.start_time < a.start_time THEN a.start_time ELSE c.start_time END AS start_time,
                 CASE WHEN c.end_time < a.end_time THEN c.end_time ELSE a.end_time END AS end_time,
                 a.label

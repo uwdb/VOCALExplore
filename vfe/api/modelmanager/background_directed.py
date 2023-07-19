@@ -19,6 +19,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
             parallel_kfold = True,
             min_trainsize = 5,
             train_labels: List[str] = None,
+            f1_val = 0.2,
             **kwargs
     ):
         super().__init__(*args, **kwargs)
@@ -27,6 +28,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
         self.parallel_kfold = parallel_kfold
         self.min_trainsize = min_trainsize
         self.train_labels = train_labels
+        self.f1_val = f1_val
 
         self._new_features_lock = threading.Lock()
         self._outstanding_training_jobs = defaultdict(int)
@@ -81,7 +83,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
                     device=self.device,
                     deterministic=self.deterministic,
                     seed=self.seed,
-                    f1_val=0.2,
+                    f1_val=self.f1_val,
                 )
             ),
             callback=partial(self._handle_trained_model, callback=callback),

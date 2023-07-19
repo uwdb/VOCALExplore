@@ -213,7 +213,7 @@ class BasicStorageManager(AbstractStorageManager):
         select_str = "SELECT vid, vpath"
         if thumbnails:
             select_str += ", thumbpath"
-        if not vids:
+        if vids is None or not len(vids):
             return self.get_cursor(read_only=True).execute("""
                 {select_str}
                 FROM video_metadata
@@ -422,8 +422,10 @@ class BasicStorageManager(AbstractStorageManager):
         return self.featurestore.get_labels(featureset, conn, adjust_feature_time=False, include_feature=True, ignore_labels=ignore_labels, full_overlap=self.full_overlap)
 
     def get_labels_for_clips_aggregated_fulloverlap(self, clipset: ClipSet, full_overlap=True) -> LabeledClipSet:
+        if full_overlap != self.full_overlap:
+            self.logger.warning(f"full_overlap={full_overlap}, but overriding to {self.full_overlap}")
         conn = self.get_cursor(read_only=True)
-        return self.featurestore.get_labels(clipset, conn, full_overlap=full_overlap, adjust_feature_time=False, include_feature=False)
+        return self.featurestore.get_labels(clipset, conn, full_overlap=self.full_overlap, adjust_feature_time=False, include_feature=False)
 
     def get_labels_for_clips_nonaggregated_overlapping(self, clipset: ClipSet) -> LabelSet:
         conn = self.get_cursor(read_only=True)

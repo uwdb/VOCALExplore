@@ -5,4 +5,5 @@ from .temporal import TemporalExplorer
 from .labeluncertainty import LabelUncertaintyExplorer
 from .uncertainty import UncertaintyExplorer
 from .clustercoreset import ClusterCoresetsExplorer
-from .randomifuniform import AbstractRandomIfUniformExplorer, AKSRandomIfUniformExplorer, CVMRandomIfUniformExplorer, RandomIfUniformExplorerFromName
+from .randomifuniform import RandomIfUniformExplorer, RandomIfUniformCMExplorer, RandomIfUniformExplorerFromName
+from .clustermargin import ClusterMarginExplorer

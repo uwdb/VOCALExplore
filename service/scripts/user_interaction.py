@@ -90,15 +90,15 @@ class AbstractUser:
             print('Labels end', file=f)
 
     @staticmethod
-    def evaluate_labels(base_sm, base_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1, eval_on_trained=False, trained_mid=None):
+    def evaluate_labels(base_sm, base_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1, eval_on_trained=False, trained_mid=None, predict_on_none=False, f1_val=0.2):
         logging.info('*** Evaluating labels.')
         if not eval_on_trained:
             # Train a model with all labels on base.
-            train_mm = AbstractPytorchModelManager(base_sm, base_fm)
+            train_mm = AbstractPytorchModelManager(base_sm, base_fm, predict_on_none=predict_on_none)
             for label in ignore_labels:
                 train_mm.ignore_label_in_predictions(label)
             train_labels = set(eval_sm.get_distinct_labels()) - set(ignore_labels)
-            trained_model_info = train_mm._train_model(feature_names, save=False, labels=train_labels, train_kwargs=dict(f1_val=0.2))
+            trained_model_info = train_mm._train_model(feature_names, save=False, labels=train_labels, train_kwargs=dict(f1_val=f1_val))
             train_mm = None
             model_info = ModelInfo(trained_model_info['model_type'], trained_model_info['model_path'], trained_model_info['labels'], core.typecheck.ensure_str(feature_names), trained_model_info['f1_threshold'])
         else:
@@ -107,8 +107,8 @@ class AbstractUser:
                 return {}
             model_info = base_sm.get_model_info_for_mid(trained_mid)
 
-        eval_mm = AbstractPytorchModelManager(eval_sm, eval_fm)
-        performance = eval_mm._model_perf(model_info, test_vids, ignore_labels=ignore_labels, groupby_vid=groupby_vid, sample_from_validation=sample_from_validation)
+        eval_mm = AbstractPytorchModelManager(eval_sm, eval_fm, predict_on_none=predict_on_none)
+        performance = eval_mm._model_perf(model_info, test_vids, ignore_labels=ignore_labels, groupby_vid=groupby_vid, sample_from_validation=sample_from_validation, cache_predictions=False)
         logging.info(f'*** Performance {performance}')
         return performance
 
