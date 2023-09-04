@@ -258,13 +258,14 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
             vids = self.storagemanager.get_all_vids()
         missing_vids = list(set(vids) - set(vids_with_predictions))
         if missing_vids:
+            start, end = None, None
             self._predict_model_for_feature(feature_names, vids, start, end, priority=priority)
         else:
             # Set _feature_to_last_prediction_mid even if we aren't performing inference so that
             # we know what mid the cached predictions came from.
             self._feature_to_last_prediction_mid[feature_names_str] = model.mid
 
-    def get_predictions(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT) -> Iterable[PredictionSet]:
+    def get_predictions(self, *, vids=None, start=None, end=None, feature_names: Union[str, List[str]]=None, ignore_labeled=False, allow_stale_predictions=False, priority: Priority=Priority.DEFAULT, as_predictionset=True, cache_predictions=True) -> Iterable[PredictionSet]:
         feature_names = core.typecheck.ensure_list(feature_names)
         # len wouldn't work if get_vids_with_labels returned a map rather than a list.
         nlabeled = len(self.storagemanager.get_vids_with_labels())
@@ -273,7 +274,7 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
 
         self.logger.info(f'Getting predictions with feature {feature_names}')
 
-        do_predict = lambda: self._predict_model_for_feature(feature_names, vids, start, end, ignore_labeled=ignore_labeled, priority=priority)
+        do_predict = lambda: self._predict_model_for_feature(feature_names, vids, start, end, ignore_labeled=ignore_labeled, priority=priority, cache_predictions=cache_predictions)
 
         if self._asyncfm and vids is not None:
             # If possible, start feature extraction process. It can happen in parallel with
@@ -310,7 +311,10 @@ class BackgroundAsyncModelManager(AbstractPytorchModelManager, AbstractAsyncMode
         #         time.sleep(0.5)
         #         continue
 
-        return probs_to_predictionset(*predictions)
+        if as_predictionset:
+            return probs_to_predictionset(*predictions)
+        else:
+            return predictions
 
     def _wait_for_model(self, feature_names: List[str]):
         with self._new_features_lock:

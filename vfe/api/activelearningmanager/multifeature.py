@@ -254,9 +254,13 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return self.featuremanager.add_video(path, start_time, duration, thumbnail_dir=self.thumbnail_dir)
 
     @logtime
+    def get_missing_thumbnails(self) -> None:
+        self.featuremanager.get_missing_thumbnails(self.thumbnail_dir)
+
+    @logtime
     def add_videos(self, video_csv_path) -> Iterable[VidType]:
         # Expect video_csv_path to have a header of: path,start,duration
-        return self.featuremanager.add_videos(video_csv_path)
+        return self.featuremanager.add_videos(video_csv_path, self.thumbnail_dir)
 
     @logtime
     def get_videos(self, limit=None, thumbnails=False) -> List[List[str]]:

@@ -16,7 +16,7 @@ class LabelUncertaintyExplorer(AbstractExplorer):
         self._shown_fids = defaultdict(set) # vid -> start times shown
         self.threshold = threshold
 
-    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None) -> Iterable[ClipInfo]:
+    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None, step=None) -> Iterable[ClipInfo]:
         self.logger.info('LabelUncertaintyExplorer explore (feature {feature_name})')
         if label is None:
             raise RuntimeError('LabelUncertaintyExplorer requires label to be specified')

@@ -76,7 +76,7 @@ class ClusterMarginExplorer(AbstractExplorer):
         # Make sure we use a model that can predict the specified label.
         # If vids is None, we'll get predictions over all stored features.
         try:
-            y_pred_probs, model_labels, features = modelmanager.get_predictions(vids=vids, start=None, end=None, feature_names=feature_names, ignore_labeled=False, as_predictionset=False)
+            y_pred_probs, model_labels, features = modelmanager.get_predictions(vids=vids, start=None, end=None, feature_names=feature_names, ignore_labeled=False, as_predictionset=False, cache_predictions=False)
         except:
             logger.info('Falling back to random sampling because no predictions')
             # Random sample because we don't have enough to make predictions yet.

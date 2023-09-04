@@ -160,15 +160,15 @@ class BasicStorageManager(AbstractStorageManager):
             )
         """)
 
-    def _add_videos(self, video_csv_path, include_thumbpath=False):
+    def _add_videos(self, video_df, include_thumbpath=False):
         conn = self.get_cursor()
 
         # Import video_info_csv_path.
         conn.execute("BEGIN TRANSACTION")
         conn.execute("""
             CREATE TEMP TABLE video_metadata_raw
-            AS SELECT * FROM read_csv_auto('{csv_path}')
-        """.format(csv_path=video_csv_path))
+            AS SELECT * FROM video_df
+        """)
         # "returning" statement isn't working.
         # Work around by getting a set of vids before and after then differencing them.
         old_vids = set(conn.execute("""
@@ -206,8 +206,15 @@ class BasicStorageManager(AbstractStorageManager):
             start_time = str(start_time)
         return self._add_video(path, start_time, duration, thumbnail_path)
 
-    def add_videos(self, video_csv_path, include_thumbpath=False) -> Iterable[VidType]:
-        return self._add_videos(video_csv_path, include_thumbpath=include_thumbpath)
+    def add_videos(self, video_df, include_thumbpath=False) -> Iterable[VidType]:
+        return self._add_videos(video_df, include_thumbpath=include_thumbpath)
+
+    def update_thumbnail_path(self, vid, thumbpath):
+        self.get_cursor().execute("""
+            UPDATE video_metadata
+            SET thumbpath=?
+            WHERE vid=?
+        """, [thumbpath, vid])
 
     def get_video_paths(self, vids, thumbnails=False) -> Iterable[Tuple[VidType, str, Union[str, None]]]:
         select_str = "SELECT vid, vpath"
@@ -434,7 +441,7 @@ class BasicStorageManager(AbstractStorageManager):
     def get_label_counts(self, feature_names: Union[str, List[str]]) -> Dict[str, int]:
         feature_names = core.typecheck.ensure_list(feature_names)
         conn = self.get_cursor(read_only=True)
-        return self.featurestore.get_label_counts(feature_names=feature_names, dbcon=conn)
+        return self.featurestore.get_label_counts(feature_names=feature_names, dbcon=conn, full_overlap=self.full_overlap)
 
     def get_unique_labels(self) -> Iterable[str]:
         rows = self.get_cursor(read_only=True).execute("""
@@ -625,11 +632,29 @@ class BasicStorageManager(AbstractStorageManager):
                 (mid, vid, start_time, end_time, label, probability)
             VALUES {values}
         """
-        values = ','.join(values)
+        values_str = ','.join(values)
         conn = self.get_sqlite_cursor()
         # Use a context manager to commit after adding values.
-        with conn:
-            conn.execute(query.format(values=values), parameters)
+        # If this fails because of a unique error, go 1-by-1 and add the ones that are not unique.
+        try:
+            with conn:
+                conn.execute(query.format(values=values_str), parameters)
+        except Exception as e:
+            self.logger.exception(f"Bulk-adding predictions failed with exception {e}")
+            offset = 0
+            for qmarks in values:
+                nparams = qmarks.count('?')
+                try:
+                    with conn:
+                        conn.execute(f"""
+                            INSERT INTO predictions
+                                (mid, vid, start_time, end_time, label, probability)
+                            VALUES {qmarks}
+                        """, parameters[offset:offset+nparams])
+                except:
+                    # May fail if this is a duplicate.
+                    pass
+                offset += nparams
 
     def add_predictions(self, mid, predictionset_list):
         self.logger.debug(f'Adding {len(predictionset_list)} predictions')
@@ -644,7 +669,7 @@ class BasicStorageManager(AbstractStorageManager):
                 parameters.extend(vals)
 
             # Try to avoid error "Too many sql parameters"
-            if len(parameters) > 10_000:
+            if len(parameters) > 30_000:
                 self._add_predictions(values, parameters)
                 parameters, values = [], []
 
@@ -712,8 +737,11 @@ class BasicStorageManager(AbstractStorageManager):
                     AND mid = ?
             """, pred_params).fetchall()
 
-            vids = ", ".join(str(row[0]) for row in pred_vids)
-            where_clause += f"""AND vid IN ({vids})"""
+            if pred_vids:
+                vids = ", ".join(str(row[0]) for row in pred_vids)
+                where_clause += f"""AND vid IN ({vids})"""
+            else:
+                where_clause += "AND False"
 
         query = f"""
             SELECT DISTINCT v.vid, vstart, 0 as clip_start, vduration as clip_end
@@ -727,7 +755,10 @@ class BasicStorageManager(AbstractStorageManager):
     def reset_annotations(self):
         # Intended for debugging only.
         conn = self.get_cursor()
-        conn.execute("truncate table predictions")
         conn.execute("truncate table models")
         conn.execute("truncate table annotations")
         conn.commit()
+
+        pconn = self.get_sqlite_cursor()
+        with pconn:
+            pconn.execute("delete from predictions")

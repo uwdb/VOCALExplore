@@ -492,8 +492,18 @@ class AbstractPytorchModelManager(AbstractModelManager):
             y_pred_probs = None
 
         # Concatenate y_pred_probs with filtered_features_with_predictions.
-        common_columns = ["vid", "start_time", "end_time", "labels"]
+        common_columns = ["fid", "vid", "start_time", "end_time", "labels", "feature"]
         if len(filtered_features_with_predictions):
+            # Do the join first in case things get re-ordered so that the order of
+            # y_pred_probs matches.
+            # Add labels and fid to filtered_featueres_with_predictions.
+            # Otherwise it only has vid, start_time, end_time, and pred_dict.
+            filtered_features_with_predictions = duckdb.connect().execute("""
+                SELECT p.*, ff.labels, ff.fid, ff.feature
+                FROM filtered_features_with_predictions p, filtered_features ff
+                WHERE p.vid=ff.vid AND p.start_time=ff.start_time AND p.end_time=ff.end_time
+            """).arrow()
+
             predictions = [json.loads(preds) for preds in filtered_features_with_predictions['pred_dict'].to_pylist()]
             y_pred_probs_existing = torch.stack([torch.Tensor([pred[label] for label in model_info.model_labels]) for pred in predictions])
             if len(y_pred_probs_existing.size()) > 2:
@@ -504,13 +514,6 @@ class AbstractPytorchModelManager(AbstractModelManager):
             else:
                 y_pred_probs = y_pred_probs_existing
 
-            # Add labels to filtered_featueres_with_predictions.
-            # Otherwise it only has vid, start_time, end_time, and pred_dict.
-            filtered_features_with_predictions = duckdb.connect().execute("""
-                SELECT p.*, ff.labels
-                FROM filtered_features_with_predictions p, filtered_features ff
-                WHERE p.vid=ff.vid AND p.start_time=ff.start_time AND p.end_time=ff.end_time
-            """).arrow()
             filtered_features = pa.concat_tables([filtered_features_for_inference.select(common_columns), filtered_features_with_predictions.select(common_columns)])
         else:
             filtered_features = filtered_features_for_inference.select(common_columns)
@@ -518,7 +521,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         # Now we're returning filtered_features with an extra 'pred_dict' column, but I think all of the callers will just ignore it.
         return y_pred_probs, model_info.model_labels, filtered_features
 
-    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT, run_async=False) -> Union[Iterable[PredictionSet], None]:
+    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT, run_async=False, cache_predictions=True) -> Union[Iterable[PredictionSet], None]:
         if (start is not None and end is None) or (start is None and end is not None):
             self.logger.warn('_predict_model may not correctly handle case where only one of start/end is None')
 
@@ -535,7 +538,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 self._feature_to_last_prediction_mid[feature_name] = model_info.mid
             return model_info
 
-        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async)
+        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async, cache_predictions=cache_predictions)
 
     def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1, include_none=False, cache_predictions=True):
         # Returns dictionary with keys:

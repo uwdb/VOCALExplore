@@ -26,10 +26,12 @@ def EXPLORER_TO_CLASS(explorer):
         return explorers.ClusterExplorer
     elif explorer == 'clustercoreset':
         return explorers.ClusterCoresetsExplorer
-    elif explorer.startswith('randomifuniform'):
-        return explorers.AKSRandomIfUniformExplorer
-    elif explorer.startswith('cvmrandomifuniform'):
-        return explorers.CVMRandomIfUniformExplorer
+    elif 'randomifuniformcm' in explorer:
+        return explorers.RandomIfUniformCMExplorer
+    elif 'randomifuniform' in explorer:
+        return explorers.RandomIfUniformExplorer
+    elif explorer == 'clustermargin':
+        return explorers.ClusterMarginExplorer
 
 
 def initialize_environment(db_dir, delete_if_exists=False):
@@ -75,16 +77,18 @@ def get_alm(config_path) -> MultiFeatureActiveLearningManager:
     # Set up acquisition function selection.
     eager_feature_extraction_unlabeled = ve_options['eager_feature_extraction_unlabeled']
     al_vids_X = ve_options['al_vids_x']
+    cm_instances_multiplier = ve_options.get('cm_instances_multiplier', 10)
 
     explorer = ve_options['explorer']
     explorer_cls = EXPLORER_TO_CLASS(explorer)
     explorer_kwargs = {}
-    if explorer == 'random':
+    if explorer in ('random', 'clustermargin'):
         explorer_kwargs['limit_to_extracted'] = eager_feature_extraction_unlabeled
-    elif explorer == 'coreset':
+    if explorer in ('coreset', 'clustermargin'):
         explorer_kwargs['missing_vids_X'] = al_vids_X
-
-    if issubclass(explorer_cls, explorers.AbstractRandomIfUniformExplorer):
+    if explorer == 'clustermargin':
+        explorer_kwargs['instances_multiplier'] = cm_instances_multiplier
+    if issubclass(explorer_cls, explorers.RandomIfUniformExplorer) or issubclass(explorer_cls, explorers.RandomIfUniformCMExplorer):
         explorer_kwargs['limit_to_extracted'] = eager_feature_extraction_unlabeled
         explorer_kwargs['missing_vids_X'] = al_vids_X
         explorer = explorers.RandomIfUniformExplorerFromName(explorer_cls, explorer, **explorer_kwargs)

@@ -284,21 +284,40 @@ class ParquetFeatureStore(AbstractFeatureStore):
         return result
 
     @read_func_multifeature
-    def get_label_counts(self, feature_names: List[str]=None, dbcon=None):
+    def get_label_counts(self, feature_names: List[str]=None, dbcon=None, full_overlap=True):
         if len(feature_names) == 1:
             feature_dir = self.feature_dir(feature_names[0])
             if not os.path.exists(feature_dir):
                 return None
-            result = dbcon.execute("""
-                SELECT a.label, count(distinct d.fid)
-                FROM annotations a,
-                    '{feature_dir}/*.parquet' d
-                WHERE a.vid=d.vid
-                    AND d.start_time >= a.start_time
-                    AND d.end_time <= a.end_time
-                GROUP BY a.label
-            """.format(feature_dir=feature_dir)).fetchall()
+            if full_overlap:
+                result = dbcon.execute("""
+                    SELECT a.label, count(distinct d.fid)
+                    FROM annotations a,
+                        '{feature_dir}/*.parquet' d
+                    WHERE a.vid=d.vid
+                        AND d.start_time >= a.start_time
+                        AND d.end_time <= a.end_time
+                    GROUP BY a.label
+                """.format(feature_dir=feature_dir)).fetchall()
+            else:
+                result = dbcon.execute("""
+                    SELECT a.label, count(distinct d.fid)
+                    FROM annotations a,
+                        '{feature_dir}/*.parquet' d
+                    WHERE a.vid=d.vid
+                        AND (
+                            -- the start time of the feature overlaps the clip
+                            (a.start_time <= d.start_time AND d.start_time <= a.end_time)
+                            -- the end time of the feature overlaps the clip
+                            OR (a.start_time <= d.end_time AND d.end_time <= a.end_time)
+                            -- the feature contains the clip
+                            OR (d.start_time <= a.start_time AND a.end_time <= d.end_time)
+                        )
+                    GROUP BY a.label
+                """.format(feature_dir=feature_dir)).fetchall()
         else:
+            if not full_overlap:
+                self.logger.warn("WARNING: Ignoring full_overlap=False in get_label_counts for multiple features.")
             if len(feature_names) > 2:
                 self.logger.warn(f'get_label_counts only supports 2 features; using the first two from {feature_names}')
             base_feature_dir = self.feature_dir(feature_names[0])
