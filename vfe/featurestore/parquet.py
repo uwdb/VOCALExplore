@@ -211,8 +211,8 @@ class ParquetFeatureStore(AbstractFeatureStore):
                         ABS(0.5 - (o.start_time - b.start_time) / (b.end_time - b.start_time)) AS position
                     FROM base_featureset b, overlay_featureset o
                     WHERE b.vid=o.vid
-                        AND b.start_time <= o.start_time
-                        AND o.end_time <= b.end_time
+                        AND b.start_time::decimal <= o.start_time::decimal
+                        AND o.end_time::decimal <= b.end_time::decimal
                 )
            )
            WHERE row_number=1

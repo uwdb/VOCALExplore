@@ -388,11 +388,16 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 logger=False,
                 callbacks=[AbstractPytorchModelManager.CustomWriter(prediction_queue=predictions_queue, features_table=features, model_info=model_info)]
             )
-            pt_dataset = data.TensorDataset(
-                torch.from_numpy(np.vstack(features['feature'].to_numpy())),
-                # The second element of each batch will be the index of each prediction.
-                torch.from_numpy(np.arange(len(features))),
-            )
+            try:
+                pt_dataset = data.TensorDataset(
+                    torch.from_numpy(np.vstack(features['feature'].to_numpy())),
+                    # The second element of each batch will be the index of each prediction.
+                    torch.from_numpy(np.arange(len(features))),
+                )
+            except Exception as e:
+                self.logger.error(f"Failed to create dataset for vids {vids}")
+                return None
+
             logger.debug(f'Prepared datasets')
             trainer.predict(model, ckpt_path=None, dataloaders=data.DataLoader(pt_dataset, num_workers=0, batch_size=256), return_predictions=False)
             logger.debug('Got predictions')

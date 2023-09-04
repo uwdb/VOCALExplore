@@ -152,7 +152,7 @@ class PriorityScheduler(AbstractScheduler):
             ).apply_async(
                 fn,
                 callback=self._handle_task_done(callback, used_gpu),
-                error_callback=self._handle_task_error(callback, used_gpu)
+                error_callback=self._handle_task_error(callback, used_gpu),
             )
 
     def _handle_task_done(self, callback, used_gpu):

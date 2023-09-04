@@ -1,11 +1,14 @@
 import clip
 from collections import defaultdict
 from enum import Enum
+from functools import partial
 from fractions import Fraction
 import re
 import torch
+import torchaudio
 # import torch_scatter
 import torch.multiprocessing as mp
+import torchaudio.transforms as AT
 import torchvision.models as models
 from torchvision.models.video import R3D_18_Weights, MViT_V2_S_Weights, MViT_V1_B_Weights
 from torchvision.models.feature_extraction import create_feature_extractor
@@ -18,6 +21,13 @@ import nvidia.dali.types as types
 
 from vfe.features.abstract import *
 from . import transforms
+
+try:
+    import openl3
+    import resampy
+except:
+    pass
+
 
 class PretrainedModel(Enum):
     RESNET34 = 'resnet18'
@@ -441,6 +451,10 @@ class VideoPretrainedModelExtractor(PretrainedModelExtractor):
         super().__init__(*args, **kwargs)
         # Reset extractor_name so that the layer isn't part of it.
         self.extractor_name = None
+
+    @property
+    def dataset_type(self):
+        return datasets.DatasetType.CLIP
 
     @staticmethod
     def clip_sampler_fn(video_fps):
@@ -924,3 +938,268 @@ class MViTV1B16x2Stride32RandomExtractor(MViTV1B16x2Stride32Extractor):
     @classmethod
     def base_model(cls):
         return models.video.mvit_v1_b(weights=None)
+
+class Wav2Vec2Stride32Extractor(VideoPretrainedModelExtractor):
+    step = 16 * 2
+
+    @property
+    def dataset_type(self):
+        return datasets.DatasetType.AUDIO
+
+    def _filename(self):
+        return 'wav2vec2_base_stride32'
+
+    @staticmethod
+    def layer_info():
+        return {
+            'layer6': 768,
+            'layer8': 768,
+            'layer10': 768,
+            'layer12': 768,
+        }
+
+    @property
+    def model(self):
+        if self._model is not None:
+            return self._model
+        model = self.bundle().get_model()
+        model = model.to(self.device).eval()
+        def feature_extractor(inputs):
+            with torch.inference_mode():
+                features, _ = model.extract_features(inputs)
+            return {
+                'layer6': torch.max(features[5], axis=1).values,
+                'layer8': torch.max(features[7], axis=1).values,
+                'layer10': torch.max(features[9], axis=1).values,
+                'layer12': torch.max(features[11], axis=1).values,
+            }
+        self._model = feature_extractor
+        return self._model
+
+    @classmethod
+    def bundle(cls):
+        return torchaudio.pipelines.WAV2VEC2_BASE
+
+    @staticmethod
+    def resample(waveform, sample_rate, desired_sample_rate=None):
+        if sample_rate == desired_sample_rate:
+            return waveform
+        return torchaudio.functional.resample(waveform, sample_rate, desired_sample_rate)
+
+    @classmethod
+    def transform(cls):
+        return partial(cls.resample, desired_sample_rate=cls.bundle().sample_rate)
+
+    @staticmethod
+    def dali_transform(frames):
+        return None
+
+    @classmethod
+    def dali_kwargs(cls, feature_name=None):
+        # Need sequence_length, stride, step for aligning features.
+        return dict(
+            sequence_length=cls.step,
+            stride=1,
+            step=cls.step,
+        )
+
+    @classmethod
+    def clip_sampler_fn(cls, video_fps):
+        clip_duration = Fraction(cls.step, video_fps)
+        # Return uniform clip sampler so we can accurately compute clip boundaries.
+        return PVD.clip_sampling.UniformClipSampler(clip_duration=clip_duration, stride=clip_duration)
+
+class AudioLargeStride32Extractor(Wav2Vec2Stride32Extractor):
+    @staticmethod
+    def layer_info():
+        return {
+            'layer24': 1024,
+        }
+
+    # TODO: share across audio feats.
+    @property
+    def model(self):
+        if self._model is not None:
+            return self._model
+        model = self.bundle().get_model()
+        model = model.to(self.device).eval()
+        def feature_extractor(inputs):
+            with torch.inference_mode():
+                features, _ = model.extract_features(inputs)
+            return {
+                'layer24': torch.max(features[23], axis=1).values
+            }
+        self._model = feature_extractor
+        return self._model
+
+class HubertLargeStride32Extractor(AudioLargeStride32Extractor):
+    def _filename(self):
+        return 'hubert_large_stride32'
+
+    @classmethod
+    def bundle(cls):
+        return torchaudio.pipelines.HUBERT_LARGE
+
+class Wav2Vec2LargeStride32Extractor(AudioLargeStride32Extractor):
+    def _filename(self):
+        return 'wav2vec2_large_stride32'
+
+    @classmethod
+    def bundle(cls):
+        return torchaudio.pipelines.WAV2VEC2_LARGE
+
+
+class AudioClipStride32Extractor(VideoPretrainedModelExtractor):
+    step = 16 * 2
+
+    @property
+    def dataset_type(self):
+        return datasets.DatasetType.AUDIO
+
+    def _filename(self):
+        return 'audio_clip_stride32'
+
+    @staticmethod
+    def layer_info():
+        return {
+            'embed': 512,
+        }
+
+    @property
+    def model(self):
+        if self._model is not None:
+            return self._model
+        base_clip_model = self.base_model()
+        base_clip_model.to(self.device).eval()
+        def feature_extractor(inputs):
+            return {'embed': base_clip_model.encode_image(
+                inputs
+            )}
+        self._model = feature_extractor
+        return self._model
+
+    @classmethod
+    def base_model(cls):
+        model, preprocess = clip.load('ViT-B/32')
+        return model
+
+    @classmethod
+    def preprocess(cls):
+        model, preprocess = clip.load('ViT-B/32')
+        return preprocess
+
+    @classmethod
+    def transform(cls):
+        preprocess = cls.preprocess()
+        # Takes as input waveform and sample rate.
+        def to_spectrogram(waveform, sample_rate):
+            # Ref: https://pytorch.org/audio/main/tutorials/audio_feature_extractions_tutorial.html#melspectrogram
+            n_fft = 1024
+            win_length = None
+            hop_length = 512
+            n_mels = 128
+
+            mel_spectogram = AT.MelSpectrogram(
+                sample_rate=sample_rate,
+                n_fft=n_fft,
+                win_length=win_length,
+                hop_length=hop_length,
+                center=True,
+                pad_mode='reflect',
+                power=2.0,
+                norm='slaney',
+                n_mels=n_mels,
+                mel_scale='htk'
+            )
+            spectrogram = AT.AmplitudeToDB()(mel_spectogram(waveform))
+            # Convert from grayscale to RGB.
+            # The resulting values won't be between 0-1, but see what happens.
+            spectrogram_img = spectrogram.expand(3, -1, -1)
+            return preprocess(T.ToPILImage()(spectrogram_img))
+
+        return to_spectrogram
+
+   @staticmethod
+    def dali_transform(frames):
+        return None
+
+    @classmethod
+    def dali_kwargs(cls, feature_name=None):
+        # Need sequence_length, stride, step for aligning features.
+        return dict(
+            sequence_length=cls.step,
+            stride=1,
+            step=cls.step,
+        )
+
+    @classmethod
+    def clip_sampler_fn(cls, video_fps):
+        clip_duration = Fraction(cls.step, video_fps)
+        # Return uniform clip sampler so we can accurately compute clip boundaries.
+        return PVD.clip_sampling.UniformClipSampler(clip_duration=clip_duration, stride=clip_duration)
+
+class OpenL3Stride32Extractor(VideoPretrainedModelExtractor):
+    step = 16 * 2
+
+    @property
+    def dataset_type(self):
+        return datasets.DatasetType.AUDIO
+
+    def _filename(self):
+        return 'openl3_music_stride32'
+
+    @staticmethod
+    def layer_info():
+        return {
+            "emb": 512,
+        }
+
+    @property
+    def model(self):
+        if self._model is not None:
+            return self._model
+        model = openl3.models.load_audio_embedding_model(input_repr="mel256", content_type="music", embedding_size=512)
+        def feature_extractor(inputs):
+            inputs_list = [t.cpu().numpy() for t in inputs]
+            sr_list = [openl3.core.TARGET_SR for _ in inputs]
+            emb, ts = openl3.get_audio_embedding(inputs_list, sr_list, model=model)
+            return {
+                "emb": torch.stack([
+                    torch.from_numpy(np.mean(e, axis=0))
+                    for e in emb
+                ]),
+            }
+        self._model = feature_extractor
+        return self._model
+
+    @staticmethod
+    def resample(waveform, sample_rate):
+        if sample_rate == openl3.core.TARGET_SR:
+            return torch.from_numpy(waveform)
+        # ref: https://openl3.readthedocs.io/en/latest/_modules/openl3/core.html#preprocess_audio
+        # _preprocess_audio_batch
+        audio = resampy.resample(waveform, sr_orig=sample_rate, sr_new=openl3.core.TARGET_SR, filter='kaiser_best')
+        return torch.from_numpy(audio)
+
+    @classmethod
+    def transform(cls):
+        return cls.resample
+
+    @staticmethod
+    def dali_transform(frames):
+        return None
+
+    @classmethod
+    def dali_kwargs(cls, feature_name=None):
+        # Need sequence_length, stride, step for aligning features.
+        return dict(
+            sequence_length=cls.step,
+            stride=1,
+            step=cls.step,
+        )
+
+    @classmethod
+    def clip_sampler_fn(cls, video_fps):
+        clip_duration = Fraction(cls.step, video_fps)
+        # Return uniform clip sampler so we can accurately compute clip boundaries.
+        return PVD.clip_sampling.UniformClipSampler(clip_duration=clip_duration, stride=clip_duration)

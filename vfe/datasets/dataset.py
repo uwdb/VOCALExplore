@@ -16,6 +16,7 @@ class DatasetType(Enum):
     FRAME = 'frame'
     CLIP = 'clip'
     DALI = 'dali'
+    AUDIO = 'audio'
 
 class SplitType(Enum):
     INTERSPERSED = 'interspersed'
@@ -75,6 +76,8 @@ class VFEDBDataset():
         elif type == DatasetType.DALI:
             labeled_video_paths = utils.unlabeled_video_paths_from_db(self.con, self.base_dir, mp4=mp4)
             return frame.VideoFrameDaliDataloader(labeled_video_paths, **kwargs)
+        elif type == DatasetType.AUDIO:
+            return frame.VideoClipDataset(labeled_video_paths, decode_audio=True, decode_video=False, **kwargs)
 
     @staticmethod
     def _get_dataset(type: DatasetType, labeled_video_paths, **kwargs):
@@ -84,6 +87,8 @@ class VFEDBDataset():
             return frame.VideoClipDataset(labeled_video_paths, **kwargs)
         elif type == DatasetType.DALI:
             return frame.VideoFrameDaliDataloader(labeled_video_paths, **kwargs)
+        elif type == DatasetType.AUDIO:
+            return frame.AudioClipDataset(labeled_video_paths, **kwargs)
         else:
             assert False, f'Unrecognized dataset type: {type}'
 

@@ -48,7 +48,8 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         logger.debug(f'Extracting features for callid {callid}: feature {feature_name} using {num_workers} threads on device {device}/gpu')
         extractor = features.utils.get_extractor(feature_name, features_dir=None, device=device)
 
-        if use_dali:
+        dataset_type = features.utils.get_extractor_type(extractor)
+        if use_dali and dataset_type != datasets.DatasetType.AUDIO:
             dl_kwargs = {
                 'type': datasets.DatasetType.DALI,
                 'device': 'gpu',
@@ -59,7 +60,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
             fps = int(fps[0]) if fps else None
             fstride = re.findall(r'(\d+)fstride', feature_name)
             fstride = int(fstride[0]) if fstride else None
-            dataset_type = features.utils.get_extractor_type(extractor)
+            dataset_type = dataset_type
             dl_kwargs = {
                 'type': dataset_type,
                 'transform': extractor.transform(),
@@ -67,7 +68,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
             }
             if dataset_type == datasets.DatasetType.FRAME:
                 dl_kwargs['stride'] = datasets.frame.CreateStride(fps=fps, fstride=fstride)
-            elif dataset_type == datasets.DatasetType.CLIP:
+            elif dataset_type in (datasets.DatasetType.CLIP, datasets.DatasetType.AUDIO):
                 dl_kwargs['clip_sampler_fn'] = extractor.clip_sampler_fn
 
         coordinator = ModelFeatureExtractorCoordinator(
@@ -149,7 +150,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
     #             # and from the main thread.
     #             self._extract_features_async(feature_name, vids_to_extract)
 
-    def __init__(self, storagemanager: AbstractStorageManager, scheduler: AbstractScheduler, num_workers=0, batch_size=1, device=None, checkpoint=500, rng=None, dali_preprocess=True, async_batch_size=-1, vid_ssd=False):
+    def __init__(self, storagemanager: AbstractStorageManager, scheduler: AbstractScheduler, num_workers=0, batch_size=1, device=None, checkpoint=500, rng=None, dali_preprocess=True, async_batch_size=-1, vid_ssd=False, ignore_missing_features=False):
         self.logger = logging.getLogger(__name__)
         self.dali_preprocess = dali_preprocess
         self.storagemanager = storagemanager
@@ -170,6 +171,7 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
 
         self.async_batch_size = async_batch_size
         self.vid_ssd = vid_ssd
+        self.ignore_missing_features = ignore_missing_features
 
         self._callid = 0
         # callid -> {feature_name:, vids:, callbacks:}
@@ -397,21 +399,24 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
                     ntasks_remaining += 1
 
             if len(missing_vids) > 0:
-                vids_and_vpaths = datasets.utils.unlabeled_video_paths_for_vids_from_storagemanager(self.storagemanager, missing_vids, mp4=True)
-                self._done_or_inprogress_vids[feature_name] |= missing_vids
+                if self.ignore_missing_features:
+                    self.logger.warn(f'WARNING: ignoring missing features for {missing_vids}')
+                else:
+                    vids_and_vpaths = datasets.utils.unlabeled_video_paths_for_vids_from_storagemanager(self.storagemanager, missing_vids, mp4=True)
+                    self._done_or_inprogress_vids[feature_name] |= missing_vids
 
-                nvids = len(vids_and_vpaths)
-                step = self.async_batch_size if self.async_batch_size > 0 \
-                    else nvids
-                for start in range(0, len(vids_and_vpaths), step):
-                    stop = min(start+step, nvids)
-                    vids = set([v[1]['vid'] for v in vids_and_vpaths[start:stop]])
-                    callid = self._callid
-                    self._callid += 1
-                    self._callbacks[callid] = {'feature_name': feature_name, 'vids': vids, 'callbacks': [wrapped_callback]}
-                    ntasks_remaining += 1
-                    self.logger.debug(f'Queueing feature extraction for callid {callid}: feature {feature_name}, vids {vids}, callback {base_callid}')
-                    args.append((self._pause_event, self._features_queue, feature_name, vids_and_vpaths[start:stop], callid, self.batch_size, self.num_workers, self.checkpoint, self.device, self.dali_preprocess, self.vid_ssd))
+                    nvids = len(vids_and_vpaths)
+                    step = self.async_batch_size if self.async_batch_size > 0 \
+                        else nvids
+                    for start in range(0, len(vids_and_vpaths), step):
+                        stop = min(start+step, nvids)
+                        vids = set([v[1]['vid'] for v in vids_and_vpaths[start:stop]])
+                        callid = self._callid
+                        self._callid += 1
+                        self._callbacks[callid] = {'feature_name': feature_name, 'vids': vids, 'callbacks': [wrapped_callback]}
+                        ntasks_remaining += 1
+                        self.logger.debug(f'Queueing feature extraction for callid {callid}: feature {feature_name}, vids {vids}, callback {base_callid}')
+                        args.append((self._pause_event, self._features_queue, feature_name, vids_and_vpaths[start:stop], callid, self.batch_size, self.num_workers, self.checkpoint, self.device, self.dali_preprocess, self.vid_ssd))
 
             # Use a list so we can decrement ntasks_remaining directly.
             # self.logger.debug(f'Remaining tasks for callback {base_callid}: {ntasks_remaining}')

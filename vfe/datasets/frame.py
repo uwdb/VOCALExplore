@@ -6,6 +6,7 @@ import numpy as np
 import os
 from pathlib import Path
 import re
+import tempfile
 from typing import Any, BinaryIO, Callable, List, Optional, Tuple, Type
 
 from vfe.core import video
@@ -13,6 +14,7 @@ from vfe.core import video
 import av
 import pytorchvideo.transforms as PVT
 import torch.utils.data
+import torchaudio
 import torchvision.transforms as T
 from pytorchvideo.data.utils import MultiProcessSampler
 from pytorchvideo.data.video import VideoPathHandler
@@ -22,6 +24,21 @@ from torch.utils.data.dataloader import default_collate
 from nvidia.dali.pipeline import pipeline_def
 import nvidia.dali.fn as fn
 import nvidia.dali.types as types
+
+try:
+    import ffmpeg
+except:
+    # Ffmpeg import may fail since it's not in requirements.
+    pass
+
+try:
+    # https://openl3.readthedocs.io/en/latest/tutorial.html
+    import openl3
+    import soundfile as sf
+except:
+    pass
+
+
 
 # Base extracting multiple images from a single video on this class.
 
@@ -457,6 +474,204 @@ class VideoClipDataset(torch.utils.data.IterableDataset):
         else:
             raise RuntimeError(
                 f"Failed to load video after {self._MAX_CONSECUTIVE_FAILURES} retries."
+            )
+
+    def __iter__(self):
+        self._video_sampler_iter = None  # Reset video sampler
+
+        # If we're in a PyTorch DataLoader multiprocessing context, we need to use the
+        # same seed for each worker's RandomSampler generator. The workers at each
+        # __iter__ call are created from the unique value: worker_info.seed - worker_info.id,
+        # which we can use for this seed.
+        worker_info = torch.utils.data.get_worker_info()
+        if self._video_random_generator is not None and worker_info is not None:
+            base_seed = worker_info.seed - worker_info.id
+            self._video_random_generator.manual_seed(base_seed)
+
+        return self
+
+class AudioClipDataset(torch.utils.data.IterableDataset):
+
+    _MAX_CONSECUTIVE_FAILURES = int(1e5)
+
+    def __init__(
+        self,
+        labeled_video_paths: List[Tuple[str, Optional[dict]]],
+        clip_sampler_fn, # Take as argument video fps, return a clip sampler.
+        done_idxs: set,
+        video_sampler: Type[torch.utils.data.Sampler] = torch.utils.data.SequentialSampler,
+        transform: Optional[Callable[[Tuple[Any, Any]], Any]] = None, # (waveform, sample_rate) -> waveform
+    ) -> None:
+        self._transform = transform
+        self._clip_sampler_fn = clip_sampler_fn
+        self._labeled_videos = labeled_video_paths
+        self._done_idxs = done_idxs
+
+        # If a RandomSampler is used we need to pass in a custom random generator that
+        # ensures all PyTorch multiprocess workers have the same random seed.
+        self._video_random_generator = None
+        if video_sampler == torch.utils.data.RandomSampler:
+            self._video_random_generator = torch.Generator()
+            self._video_sampler = video_sampler(
+                self._labeled_videos, generator=self._video_random_generator
+            )
+        else:
+            self._video_sampler = video_sampler(self._labeled_videos)
+
+        self._video_sampler_iter = None  # Initialized on first call to self.__next__()
+
+        # Depending on the clip sampler type, we may want to sample multiple clips
+        # from one video. In that case, we keep the store video, label and previous sampled
+        # clip time in these variables.
+        self._loaded_video_label = None
+        self._loaded_clip = None
+        self._next_clip_start_time = 0.0
+        self.video_path_handler = VideoPathHandler()
+
+    @property
+    def video_sampler(self):
+        return self._video_sampler
+
+    @property
+    def num_videos(self):
+        return len(self.video_sampler)
+
+    @staticmethod
+    def _fps_from_pyav_video(video):
+        return video._container.streams.video[0].average_rate
+
+    def _copy_audio(self, video_path, output_path):
+        ffmpeg.input(video_path).output(output_path, acodec='copy').overwrite_output().run(capture_stdout=True, capture_stderr=True)
+
+    def _transcode_audio(self, video_path, output_path):
+        ffmpeg.input(video_path).output(output_path, acodec='pcm_s16le').overwrite_output().run(capture_stdout=True, capture_stderr=True)
+
+    def get_acodec(self, container):
+        return container.streams.audio[0].codec.name
+
+    def load_audio(self, pyav_video, video_path):
+        with tempfile.NamedTemporaryFile(suffix='.wav') as f:
+            acodec = self.get_acodec(pyav_video._container)
+            if acodec == 'pcm_s16le':
+                self._copy_audio(video_path, f.name)
+            else:
+                self._transcode_audio(video_path, f.name)
+
+            # UNCOMMENT FOR torchaudio pipelines
+            # waveform, sample_rate = torchaudio.load(f.name)
+
+            # UNCOMMENT FOR openl3 pipelines
+            waveform, sample_rate = sf.read(f.name)
+            if waveform.ndim == 2:
+                # Also from _process_audio_batch.
+                waveform = np.mean(waveform, axis=1)
+
+        return waveform, sample_rate
+
+    def __next__(self) -> dict:
+        if not self._video_sampler_iter:
+            # Setup MultiProcessSampler here - after PyTorch DataLoader workers are spawned.
+            self._video_sampler_iter = iter(MultiProcessSampler(self._video_sampler))
+
+        for i_try in range(self._MAX_CONSECUTIVE_FAILURES):
+            # Reuse previously stored video if there are still clips to be sampled from
+            # the last loaded video.
+            if self._loaded_video_label:
+                video, info_dict, video_index, video_path = self._loaded_video_label
+            else:
+                found_new_index = False
+                while not found_new_index:
+                    video_index = next(self._video_sampler_iter)
+                    found_new_index = video_index not in self._done_idxs
+                try:
+                    video_path, info_dict = self._labeled_videos[video_index]
+                    video = self.video_path_handler.video_from_path(
+                        video_path,
+                        decoder="pyav",
+                    )
+                    try:
+                        waveform, sample_rate = self.load_audio(video, video_path)
+                    except Exception as e:
+                        # This will error if the video doesn't have an audio track.
+                        logging.exception(f"Failed to load audio from {video_path}")
+                        continue
+                    self._loaded_video_label = (video, info_dict, video_index, video_path)
+                except Exception as e:
+                    print(
+                        "Failed to load video with error: {}; trial {}".format(
+                            e,
+                            i_try,
+                        )
+                    )
+                    continue
+
+            video_is_complete = False
+            all_clips = []
+            clip_starts = []
+            clip_ends = []
+            min_waveform_length = None
+            max_waveform_length = None
+            clip_sampler = self._clip_sampler_fn(self._fps_from_pyav_video(video))
+            while not video_is_complete:
+                (
+                    clip_start,
+                    clip_end,
+                    clip_index,
+                    aug_index,
+                    is_last_clip,
+                ) = clip_sampler(
+                    self._next_clip_start_time, video.duration, info_dict
+                )
+
+                assert not isinstance(clip_start, list)
+                assert not isinstance(is_last_clip, list)
+
+                # UNCOMMENT FOR torchaudio pipelines
+                # clip_waveform = waveform[0, int(clip_start * sample_rate) : int(clip_end * sample_rate)]
+
+                # UNCOMMENT FOR openl3 pipelines
+                clip_waveform = waveform[int(clip_start * sample_rate) : int(clip_end * sample_rate)]
+
+                self._next_clip_start_time = clip_end
+                if is_last_clip:
+                    # Close the loaded encoded video and reset the last sampled clip.
+                    self._loaded_video_label[0].close()
+                    self._loaded_video_label = None
+                    self._next_clip_start_time = 0.0
+                    video_is_complete = True
+
+                if len(clip_waveform):
+                    if self._transform:
+                        clip_waveform = self._transform(clip_waveform, sample_rate)
+
+                    # This has to come after the transform because the length might change.
+                    clip_length = clip_waveform.shape[-1]
+                    if min_waveform_length is None or clip_length < min_waveform_length:
+                        min_waveform_length = clip_length
+                    if max_waveform_length is None or clip_length > max_waveform_length:
+                        max_waveform_length = clip_length
+
+                    all_clips.append(clip_waveform)
+                    clip_starts.append(clip_start)
+                    clip_ends.append(clip_end)
+
+            if min_waveform_length != max_waveform_length:
+                # Make sure all clips are the same shape for stacking.
+                all_clips = [clip[:min_waveform_length] for clip in all_clips]
+
+            sample_dict = {
+                'frames': torch.stack(all_clips), # Shape is (N, ?)
+                'size': len(all_clips),
+                'video_index': video_index,
+                'video_path': video_path,
+                'frame_secs': torch.Tensor(clip_starts),
+                'frame_ends': torch.Tensor(clip_ends),
+                **info_dict
+            }
+            return sample_dict
+        else:
+            raise RuntimeError(
+                f'Failed to load audio after {self._MAX_CONSECUTIVE_FAILURES} retries'
             )
 
     def __iter__(self):

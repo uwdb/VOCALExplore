@@ -24,7 +24,12 @@ def add_delta(dt, seconds):
         return dt + np.timedelta64(seconds, 's')
 
 class BasicStorageManager(AbstractStorageManager):
-    def __init__(self, db_dir, features_dir, models_dir, read_only=False, fid_offset=0, full_overlap=True):
+    def __init__(self, db_dir, features_dir, models_dir, read_only=False, fid_offset=0, full_overlap=True, max_rows=50000):
+        if not features_dir:
+            features_dir = os.path.join(db_dir, 'features')
+        if not models_dir:
+            models_dir = os.path.join(db_dir, 'models')
+
         # Metadata and annotations.
         # Initialize db_dir, _con, _con_type before running setup statements.
         self.db_dir = db_dir
@@ -40,7 +45,7 @@ class BasicStorageManager(AbstractStorageManager):
 
         # Features.
         self.features_dir = features_dir
-        self.featurestore = FeatureStore(base_dir=self.features_dir, fid_offset=fid_offset)
+        self.featurestore = FeatureStore(base_dir=self.features_dir, fid_offset=fid_offset, max_rows=max_rows)
 
         # Models.
         self.models_dir = models_dir

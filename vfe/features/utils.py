@@ -34,6 +34,16 @@ def get_extractor(model, return_class=False, **kwargs):
             extractor_cls = features.pretrained.models.MViTV1B16x2Extractor
     elif model.startswith('mvit_v1_b'):
         extractor_cls = features.pretrained.models.MViTV1BExtractor
+    elif model.startswith('wav2vec2_base_stride32'):
+        extractor_cls = features.pretrained.models.Wav2Vec2Stride32Extractor
+    elif model.startswith('wav2vec2_large_stride32'):
+        extractor_cls = features.pretrained.models.Wav2Vec2LargeStride32Extractor
+    elif model.startswith('audio_clip_stride32'):
+        extractor_cls = features.pretrained.models.AudioClipStride32Extractor
+    elif model.startswith('hubert_large_stride32'):
+        extractor_cls = features.pretrained.models.HubertLargeStride32Extractor
+    elif model.startswith('openl3_music_stride32'):
+        extractor_cls = features.pretrained.models.OpenL3Stride32Extractor
     else:
         raise RuntimeError(f'Unrecognized model {model}')
 
@@ -43,7 +53,4 @@ def get_extractor(model, return_class=False, **kwargs):
         return extractor_cls.create(extractor_name=model, **kwargs)
 
 def get_extractor_type(extractor) -> datasets.DatasetType:
-    if isinstance(extractor, features.pretrained.models.VideoPretrainedModelExtractor):
-        return datasets.DatasetType.CLIP
-    else:
-        return datasets.DatasetType.FRAME
+        return extractor.dataset_type
