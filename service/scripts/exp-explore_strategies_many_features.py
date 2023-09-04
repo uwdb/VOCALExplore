@@ -40,10 +40,12 @@ def EXPLORER_TO_CLASS(explorer):
         return explorers.ClusterExplorer
     elif explorer == 'clustercoreset':
         return explorers.ClusterCoresetsExplorer
-    elif explorer.startswith('randomifuniform'):
-        return explorers.AKSRandomIfUniformExplorer
-    elif explorer.startswith('cvmrandomifuniform'):
-        return explorers.CVMRandomIfUniformExplorer
+    elif 'randomifuniformcm' in explorer:
+        return explorers.RandomIfUniformCMExplorer
+    elif 'randomifuniform' in explorer:
+        return explorers.RandomIfUniformExplorer
+    elif explorer == 'clustermargin':
+        return explorers.ClusterMarginExplorer
 
 def cleanup(models_dir=None, features_dir=None, db_dir=None):
     shutil.rmtree(db_dir)
@@ -103,13 +105,15 @@ def main():
     data_group.add_argument('--cleanup', action='store_true', help='Remove db_dir before exiting')
     data_group.add_argument('--no-eval-on-test', action='store_true', help='Do not evaluate model performance')
     data_group.add_argument('--eval-on-trained', action='store_true', help='Evaluate model performance using the last model VOCALExplore used to make predictions (rather than training a new model over the labels collected so far)')
+    data_group.add_argument('--eval-groupby-vid', action='store_true')
 
     other = ap.add_argument_group('Other')
     other.add_argument('--feature-names', nargs='+', help='List of candidate feature names')
-    other.add_argument('--explorer', choices=['random', 'coreset', 'randomifuniform'], help='Acquisition function (randomifuniform corresponds to VE-sample)')
+    other.add_argument('--explorer', help='Acquisition function (randomifuniform corresponds to VE-sample)')
     other.add_argument('--oracle', default='exact', choices=['exact', 'context-from-center',], help='Behavior of oracle labeler; paper only evaluated with "exact"')
     other.add_argument('--cpus', type=int, help='Maximum number of tasks to execute at once')
     other.add_argument('--gpus', type=int, help='Maximum number of tasks to execute at once on the GPU (GPU tasks count towards the CPU task limit)')
+    other.add_argument('--partial-overlap', action='store_true')
 
     user = ap.add_argument_group('User')
     user.add_argument('--k', type=int, help='Number of video segments to return from each call to "Explore"')
@@ -124,6 +128,8 @@ def main():
     mm.add_argument('--mm-device', choices=('cpu', 'cuda'), help='Device to use to train and perform inference')
     mm.add_argument('--min-labels', type=int, default=5, help='Number of labels required to start training a model')
     mm.add_argument('--serial-kfold', action='store_true', help='Whether to evaluate k-fold splits in serial or parallel')
+    mm.add_argument('--predict-on-none', action='store_true')
+    mm.add_argument('--f1-val', type=float, default=0.2)
 
     fm = ap.add_argument_group('Feature manager')
     fm.add_argument('--start-with-features', type=int, default=1, choices=(0, 1), help='For evaluation, whether the feature manager should be initialized with all features')
@@ -132,6 +138,7 @@ def main():
     alm.add_argument('--strategy', choices=[f.value for f in FeatureEvalStrategy], help='How to evaluate candidate features. Use "wait" or "risingbandit" when using one feature, "concat" to concatenate all features, or "risingbandit" to perform feature selection over multiple features')
     alm.add_argument('--no-return-predictions', action='store_true', help='Do not return predictions along with selected video clips (removes latency of inference, and additionally feature extraction for random sampling)')
     alm.add_argument('--al-vids-x', type=int, default=-1, help='For incremental active learning, minimum number of candidate videos to preprocess')
+    alm.add_argument('--cm-instances-multiplier', type=int, default=10, help='Sample multiplier when explorer is clustermargin')
 
     bandit = ap.add_argument_group('Bandit')
     bandit.add_argument('--bandit-C', type=int, default=7)
@@ -173,22 +180,24 @@ def main():
         cleanup_fun = partial(cleanup, models_dir=models_dir, features_dir=features_dir, db_dir=db_dir)
         atexit.register(cleanup_fun)
 
-    oracle_sm = StorageManager(db_dir=oracle_dir, features_dir=os.path.join(oracle_dir, 'features'), models_dir=None, read_only=True)
+    oracle_sm = StorageManager(db_dir=oracle_dir, features_dir=os.path.join(oracle_dir, 'features'), models_dir=None, read_only=True, full_overlap=(not args.partial_overlap))
     # If we are evaluating on an already-trained model, it needs to be able to predict all of the classes in the evaluation set.
     train_labels = set(oracle_sm.get_distinct_labels()) - ignore_labels if args.eval_on_trained else None
 
-    sm = StorageManager(db_dir=db_dir, features_dir=features_dir, models_dir=models_dir)
+    sm = StorageManager(db_dir=db_dir, features_dir=features_dir, models_dir=models_dir, full_overlap=(not args.partial_overlap))
     vm = VideoManager(sm)
     scheduler = PriorityScheduler(cpus=args.cpus, gpus=args.gpus, suspend_lowp=args.suspend_lowp)
     fm = BackgroundAsyncFeatureManager(sm, scheduler, batch_size=8)
-    mm = BackgroundAsyncModelManager(sm, fm, scheduler=scheduler, min_trainsize=args.min_labels, device=args.mm_device, train_labels=train_labels, parallel_kfold=(not args.serial_kfold))
+    mm = BackgroundAsyncModelManager(sm, fm, scheduler=scheduler, min_trainsize=args.min_labels, device=args.mm_device, train_labels=train_labels, parallel_kfold=(not args.serial_kfold), f1_val=args.f1_val)
     explorer_cls = EXPLORER_TO_CLASS(args.explorer)
     explorer_kwargs = {}
-    if args.explorer == 'random':
+    if args.explorer in ('random', 'clustermargin'):
         explorer_kwargs['limit_to_extracted'] = eager_feature_extraction_unlabeled
-    elif args.explorer == 'coreset':
+    if args.explorer in ('coreset', 'clustermargin'):
         explorer_kwargs['missing_vids_X'] = args.al_vids_x
-    if issubclass(explorer_cls, explorers.AbstractRandomIfUniformExplorer):
+    if args.explorer == 'clustermargin':
+        explorer_kwargs['instances_multiplier'] = args.cm_instances_multiplier
+    if issubclass(explorer_cls, explorers.RandomIfUniformExplorer) or issubclass(explorer_cls, explorers.RandomIfUniformCMExplorer):
         explorer_kwargs['limit_to_extracted'] = eager_feature_extraction_unlabeled
         explorer_kwargs['missing_vids_X'] = args.al_vids_x
         explorer = explorers.RandomIfUniformExplorerFromName(explorer_cls, args.explorer, **explorer_kwargs)
@@ -223,13 +232,13 @@ def main():
     if strategy == FeatureEvalStrategy.RISINGBANDIT:
         if args.bandit_eval == 'testset':
             def bandit_eval_fn(feature_names, callback):
-                performance = user.evaluate_labels(sm, oracle_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels, sample_from_validation=args.bandit_validation_size)
+                performance = user.evaluate_labels(sm, oracle_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels, sample_from_validation=args.bandit_validation_size, predict_on_none=args.predict_on_none, f1_val=args.f1_val)
                 callback(performance['pred_' + args.bandit_eval_metric])
         elif args.bandit_eval == 'kfold':
             assert args.bandit_kfold_k > 0, f'--bandit-kfold-k must be positive when --bandit-eval is "kfold"; {args.bandit_kfold_k}'
             def bandit_eval_fn(feature_names, callback):
                 def parse_performance(performance, callback=None):
-                    if performance is None:
+                    if performance is None or not len(performance):
                         logging.warning(f'Kfold returned no performance metrics for {feature_names}')
                         callback(0)
                         return
@@ -242,7 +251,7 @@ def main():
 
                     callback(performance['test_' + args.bandit_eval_metric])
 
-                mm.check_label_quality_async(feature_names, n_splits=args.bandit_kfold_k, min_size=args.min_labels, f1_val=0.2, callback=partial(parse_performance, callback=callback))
+                mm.check_label_quality_async(feature_names, n_splits=args.bandit_kfold_k, min_size=args.min_labels, f1_val=args.f1_val, callback=partial(parse_performance, callback=callback))
 
         else:
             assert False, f'Unhandled bandit eval strategy {args.bandit_eval}'
@@ -285,7 +294,7 @@ def main():
             print_and_flush(f'Step {i} evaluating on feature {feature_names}')
             start_train = time.perf_counter()
             start_train_process = time.process_time()
-            user.evaluate_labels(sm, oracle_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels, eval_on_trained=args.eval_on_trained, trained_mid=mm._feature_to_last_prediction_mid.get(core.typecheck.ensure_str(feature_names), None))
+            user.evaluate_labels(sm, oracle_fm, eval_sm, eval_fm, feature_names, test_vids, ignore_labels, eval_on_trained=args.eval_on_trained, trained_mid=mm._feature_to_last_prediction_mid.get(core.typecheck.ensure_str(feature_names), None), predict_on_none=args.predict_on_none, groupby_vid=args.eval_groupby_vid, f1_val=args.f1_val)
             training_time += time.perf_counter() - start_train
             training_process_time += time.process_time() - start_train_process
             scheduler.resume_all()

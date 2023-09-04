@@ -13,32 +13,53 @@ from vfe.api.activelearningmanager.abstractexplorer import AbstractExplorer
 
 from .randomexp import RandomExplorer
 from .coresets import CoresetsExplorer
+from .clustermargin import ClusterMarginExplorer
 
-class AbstractRandomIfUniformExplorer(AbstractExplorer):
-    def __init__(self, rng=None, missing_vids_X=-1, **kwargs):
+logger = logging.getLogger(__name__)
+
+class AbstractUniformTester:
+    def __init__(self, pval=0.001, m=None, rng=None):
+        self.pval = pval
+        self.m = m
+        self.rng = np.random.default_rng(rng)
+
+    def labels_are_uniform(self, label_to_time):
+        raise NotImplementedError
+
+class RandomIfUniformExplorer(AbstractExplorer):
+    def __init__(self, uniform_tester: AbstractUniformTester, rng=None, missing_vids_X=-1, **kwargs):
+        self.uniform_tester = uniform_tester
         self.rng = np.random.default_rng(rng)
         self.random_explorer = RandomExplorer(rng=rng, **kwargs)
         self.coresets_explorer = CoresetsExplorer(rng=rng, missing_vids_X=missing_vids_X)
-        self.logger = logging.getLogger(__name__)
         self._uniform_labels = True
 
-    def _labels_are_uniform(self, label_to_time):
-        raise NotImplementedError
-
-    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None) -> Iterable[ClipInfo]:
-        if self._labels_are_uniform(modelmanager.get_total_label_time()):
-            self.logger.debug('Random exploration because labels are uniform')
-            return self.random_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=label, vids=vids)
+    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None, step=None) -> Iterable[ClipInfo]:
+        if self.uniform_tester.labels_are_uniform(modelmanager.get_total_label_time()):
+            logger.debug('Random exploration because labels are uniform')
+            return self.random_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=label, vids=vids, step=step)
         else:
-            self.logger.debug('Coresets exploration because labels are not uniform')
-            return self.coresets_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=None, vids=None)
+            logger.debug('Coresets exploration because labels are not uniform')
+            return self.coresets_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=None, vids=None, step=step)
 
-class AKSRandomIfUniformExplorer(AbstractRandomIfUniformExplorer):
-    def __init__(self, pval=0.001, rng=None, **kwargs):
-        super().__init__(rng=rng, **kwargs)
-        self.pval = pval
+class RandomIfUniformCMExplorer(AbstractExplorer):
+    def __init__(self, uniform_tester: AbstractUniformTester, rng=None, missing_vids_X=-1, **kwargs):
+        self.uniform_tester = uniform_tester
+        self.rng = np.random.default_rng(rng)
+        self.random_explorer = RandomExplorer(rng=rng, **kwargs)
+        self.clustermargin_explorer = ClusterMarginExplorer(rng=rng, missing_vids_X=missing_vids_X, **kwargs)
+        self._uniform_labels = True
 
-    def _labels_are_uniform(self, label_to_time):
+    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None, step=None) -> Iterable[ClipInfo]:
+        if self.uniform_tester.labels_are_uniform(modelmanager.get_total_label_time()):
+            logger.debug('Random exploration because labels are uniform')
+            return self.random_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=label, vids=vids, step=step)
+        else:
+            logger.debug('Cluster-Margin exploration because labels are not uniform')
+            return self.clustermargin_explorer.explore(feature_names, featuremanager, modelmanager, videomanager, k, t, label=None, vids=None, step=step)
+
+class AKSUniformTester(AbstractUniformTester):
+    def labels_are_uniform(self, label_to_time):
         label_counts = [math.ceil(seconds) for seconds in label_to_time.values()]
         nclasses = len(label_counts)
         if nclasses <= 1:
@@ -48,15 +69,11 @@ class AKSRandomIfUniformExplorer(AbstractRandomIfUniformExplorer):
             samples_from_counts,
             self.rng.integers(0, nclasses, size=max(nclasses, 200))
         ])[-1]
-        self.logger.debug(f'Uniformity stat: {stat_value}')
+        logger.debug(f'Uniformity stat: {stat_value}')
         return stat_value > self.pval
 
-class CVMRandomIfUniformExplorer(AbstractRandomIfUniformExplorer):
-    def __init__(self, pval=0.001, rng=None):
-        super().__init__(rng=rng)
-        self.pval = pval
-
-    def _labels_are_uniform(self, label_to_time):
+class CVMUniformTester(AbstractUniformTester):
+    def labels_are_uniform(self, label_to_time):
         label_counts = [math.ceil(seconds) for seconds in label_to_time.values()]
         nclasses = len(label_counts)
         if nclasses <= 1:
@@ -67,14 +84,45 @@ class CVMRandomIfUniformExplorer(AbstractRandomIfUniformExplorer):
             'randint',
             args=(0, nclasses)
         ).pvalue
-        self.logger.debug(f'Uniformity stat: {stat_value}')
+        logger.debug(f'Uniformity stat: {stat_value}')
         return stat_value > self.pval
 
+class BinomialUniformTester(AbstractUniformTester):
+    def labels_are_uniform(self, label_to_time):
+        # Multiply by 1000 for frame-level labels that don't accumulate to more than one second.
+        label_counts = [math.ceil(seconds * 1000) for seconds in label_to_time.values()]
+        nclasses = len(label_counts)
+        if nclasses <= 1:
+            return True
+
+        n = np.sum(label_counts)
+        min_c = np.min(label_counts)
+        k = len(label_counts)
+        stat_value = k * stats.binom.cdf(min_c, n, 1/(k * self.m))
+        logger.debug(f'Uniformity stat: {stat_value}')
+        return stat_value > self.pval
+
+
 def RandomIfUniformExplorerFromName(cls, name, **kwargs):
-    try:
+    if name.startswith('cvm'):
+        uniform_tester_cls = CVMUniformTester
+    elif name.startswith('binom'):
+        uniform_tester_cls = BinomialUniformTester
+    else:
+        uniform_tester_cls = AKSUniformTester
+    rng = kwargs.get('rng', None)
+
+    if uniform_tester_cls == BinomialUniformTester:
+        # The name must specify m and pval.
         pval = float(re.search(r'pval([\d\.]+)', name)[1])
-        return cls(pval=pval, **kwargs)
-    except:
-        logging.warn('Creating explorer with default pval because regex failed')
-        # Use default pvalue if we can't match on the name.
-        return cls(**kwargs)
+        m = float(re.search(r'_m([\d\.]+)', name)[1])
+        logger.debug(f'Creating binomial tester with pval={pval}, m={m}')
+        uniform_tester = uniform_tester_cls(pval=pval, m=m, rng=rng)
+    else:
+        try:
+            pval = float(re.search(r'pval([\d\.]+)', name)[1])
+            uniform_tester = uniform_tester_cls(pval=pval, rng=rng)
+        except:
+            logger.warn('Creating explorer with default pval because regex failed')
+            uniform_tester = uniform_tester_cls(rng=rng)
+    return cls(uniform_tester, **kwargs)

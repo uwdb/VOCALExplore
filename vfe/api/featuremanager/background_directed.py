@@ -17,6 +17,7 @@ from typing import Iterable, Tuple, Union, List
 
 from vfe import core
 from vfe.core.logging import configure_logger
+from vfe.core.timing import logtime
 from vfe import datasets
 from vfe import features
 from vfe.features.modelcoordinator import ModelFeatureExtractorCoordinator
@@ -206,6 +207,13 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         self.logger.info('Resumed')
         self._pause_event.set()
 
+    def get_missing_thumbnails(self, thumbnail_dir):
+        vpaths = self.storagemanager.get_video_paths(vids=None, thumbnails=True)
+        for (vid, vpath, thumbpath) in vpaths:
+            if os.path.exists(thumbpath):
+                continue
+            thumbpath = core.video.save_thumbnail(vpath, thumbnail_dir)
+
     def add_video(self, path, start_time=None, duration=None, thumbnail_dir=None) -> VidType:
         # Don't proactively extract features.
         if duration is None:
@@ -217,9 +225,11 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
             self.logger.warn(f'Failed to add video at path {path} with exception {e}')
             return None
 
-    def add_videos(self, video_csv_path) -> Iterable[VidType]:
+    def add_videos(self, video_csv_path, thumbnail_dir) -> Iterable[VidType]:
         # Expect video_csv_path to have a header of: path,start,duration
-        return self.storagemanager.add_videos(video_csv_path)
+        df = pd.read_csv(video_csv_path)
+        df['thumbpath'] = df['path'].apply(lambda p:core.video.get_thumbnail_path(p, thumbnail_dir))
+        return self.storagemanager.add_videos(df, include_thumbpath=True)
 
     @staticmethod
     def _add_videos(vpaths, thumbnail_dir):
@@ -261,29 +271,27 @@ class BackgroundAsyncFeatureManager(AbstractAsyncFeatureManager):
         # Add all of the metadata to the database.
         # Add a prepare/callback for each batch so we are done once everything
         # is in the database.
-        with NamedTemporaryFile(mode="w+", suffix=".csv") as video_csv:
-            rows = []
-            for vpath in vpaths:
-                duration = core.video.get_video_duration(vpath)
-                thumbnail_path = core.video.get_thumbnail_path(vpath, thumbnail_dir)
-                # Callback now that we have the duration. It's not actually done since
-                # we still have to add it to the database, but it's close.
-                callback_fn()
+        rows = []
+        for vpath in vpaths:
+            duration = core.video.get_video_duration(vpath)
+            thumbnail_path = core.video.get_thumbnail_path(vpath, thumbnail_dir)
+            # Callback now that we have the duration. It's not actually done since
+            # we still have to add it to the database, but it's close.
+            callback_fn()
 
-                # Keep track of data for bulk insert.
-                rows.append((vpath, vstart, duration, thumbnail_path))
-                if len(rows) > 2000:
-                    df = pd.DataFrame.from_records(rows, columns=["path", "start", "duration", "thumbpath"])
-                    df.to_csv(video_csv.name)
-                    self.storagemanager.add_videos(video_csv.name, include_thumbpath=True)
-                    rows = []
-
-            if rows:
+            # Keep track of data for bulk insert.
+            rows.append((vpath, vstart, duration, thumbnail_path))
+            if len(rows) > 2000:
                 df = pd.DataFrame.from_records(rows, columns=["path", "start", "duration", "thumbpath"])
-                df.to_csv(video_csv.name)
-                self.storagemanager.add_videos(video_csv.name, include_thumbpath=True)
+                self.storagemanager.add_videos(df, include_thumbpath=True)
+                rows = []
+
+        if rows:
+            df = pd.DataFrame.from_records(rows, columns=["path", "start", "duration", "thumbpath"])
+            self.storagemanager.add_videos(df, include_thumbpath=True)
 
 
+    @logtime
     def get_features(self, feature_names: Union[str, List[str]], vids, priority: Priority=Priority.DEFAULT) -> FeatureSet:
         feature_names = core.typecheck.ensure_list(feature_names)
 

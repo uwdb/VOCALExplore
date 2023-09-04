@@ -15,7 +15,7 @@ class RandomExplorer(AbstractExplorer):
         self.limit_to_extracted = limit_to_extracted
         self.logger = logging.getLogger(__name__)
 
-    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None) -> Iterable[ClipInfo]:
+    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None, step=None) -> Iterable[ClipInfo]:
         if vids is None:
             vids_with_features, vids_without_features = featuremanager.get_extracted_features_info(feature_names)
             labeled_vids = set(modelmanager.get_vids_with_labels())

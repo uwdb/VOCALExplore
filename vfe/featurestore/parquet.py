@@ -228,11 +228,15 @@ class ParquetFeatureStore(AbstractFeatureStore):
             return dataset.scanner(filter=ds.field('vid').isin(vids))
         return dataset
 
-    def get_features_for_clips_concat(self, *, feature_names: List[str] = None, clips: ClipSet=None):
+    def get_features_for_clips_concat(self, *, feature_names: List[str] = None, clips: ClipSet=None, full_overlap=True):
         # This is a read function, but we don't have to use @read_func because the calls to get_features_for_clips
         # will do that for us when we are actually reading the features.
         if len(feature_names) == 1:
-            return self.get_features_for_clips(feature_name=feature_names[0], clips=clips)
+            return self.get_features_for_clips(feature_name=feature_names[0], clips=clips, full_overlap=full_overlap)
+
+        if not full_overlap:
+            # idk what to do for this right now.
+            logger.warn('WARNING: ignoring full_overlap=False for concatenating features')
 
         combined_features = self.get_features_for_clips(feature_name=feature_names[0], clips=clips)
         for overlay_feat in feature_names[1:]:
@@ -247,37 +251,73 @@ class ParquetFeatureStore(AbstractFeatureStore):
         return combined_features
 
     @read_func
-    def get_features_for_clips(self, *, feature_name=None, clips: ClipSet=None):
+    def get_features_for_clips(self, *, feature_name=None, clips: ClipSet=None, full_overlap=True):
         feature_dir = self.feature_dir(feature_name)
         if not os.path.exists(feature_dir):
             return None
         con = duckdb.connect() # in memory.
-        result = con.execute("""
-            SELECT d.fid, FIRST(d.vid) AS vid, FIRST(d.start_time) AS start_time, FIRST(d.end_time) AS end_time, FIRST(d.feature) AS feature
-            FROM '{feature_dir}/*.parquet' d, clips c
-            WHERE d.vid=c.vid
-                AND d.start_time >= c.start_time
-                AND d.end_time <= c.end_time
-            GROUP BY d.fid
-        """.format(feature_dir=feature_dir)).arrow()
+        if full_overlap:
+            result = con.execute("""
+                SELECT d.fid, FIRST(d.vid) AS vid, FIRST(d.start_time) AS start_time, FIRST(d.end_time) AS end_time, FIRST(d.feature) AS feature
+                FROM '{feature_dir}/*.parquet' d, clips c
+                WHERE d.vid=c.vid
+                    AND d.start_time >= c.start_time
+                    AND d.end_time <= c.end_time
+                GROUP BY d.fid
+            """.format(feature_dir=feature_dir)).arrow()
+        else:
+            # Get the features that contain the specified clips.
+            result = con.execute("""
+                SELECT d.fid, FIRST(d.vid) AS vid, FIRST(d.start_time) AS start_time, FIRST(d.end_time) AS end_time, FIRST(d.feature) AS feature
+                FROM '{feature_dir}/*.parquet' d, clips c
+                WHERE d.vid=c.vid
+                    AND (
+                        -- the start time of the feature overlaps the clip
+                        (c.start_time <= d.start_time AND d.start_time <= c.end_time)
+                        -- the end time of the feature overlaps the clip
+                        OR (c.start_time <= d.end_time AND d.end_time <= c.end_time)
+                        -- the feature contains the cilp
+                        OR (d.start_time <= c.start_time AND c.end_time <= d.end_time)
+                    )
+                GROUP BY d.fid
+            """.format(feature_dir=feature_dir)).arrow()
         return result
 
     @read_func_multifeature
-    def get_label_counts(self, feature_names: List[str]=None, dbcon=None):
+    def get_label_counts(self, feature_names: List[str]=None, dbcon=None, full_overlap=True):
         if len(feature_names) == 1:
             feature_dir = self.feature_dir(feature_names[0])
             if not os.path.exists(feature_dir):
                 return None
-            result = dbcon.execute("""
-                SELECT a.label, count(distinct d.fid)
-                FROM annotations a,
-                    '{feature_dir}/*.parquet' d
-                WHERE a.vid=d.vid
-                    AND d.start_time >= a.start_time
-                    AND d.end_time <= a.end_time
-                GROUP BY a.label
-            """.format(feature_dir=feature_dir)).fetchall()
+            if full_overlap:
+                result = dbcon.execute("""
+                    SELECT a.label, count(distinct d.fid)
+                    FROM annotations a,
+                        '{feature_dir}/*.parquet' d
+                    WHERE a.vid=d.vid
+                        AND d.start_time >= a.start_time
+                        AND d.end_time <= a.end_time
+                    GROUP BY a.label
+                """.format(feature_dir=feature_dir)).fetchall()
+            else:
+                result = dbcon.execute("""
+                    SELECT a.label, count(distinct d.fid)
+                    FROM annotations a,
+                        '{feature_dir}/*.parquet' d
+                    WHERE a.vid=d.vid
+                        AND (
+                            -- the start time of the feature overlaps the clip
+                            (a.start_time <= d.start_time AND d.start_time <= a.end_time)
+                            -- the end time of the feature overlaps the clip
+                            OR (a.start_time <= d.end_time AND d.end_time <= a.end_time)
+                            -- the feature contains the clip
+                            OR (d.start_time <= a.start_time AND a.end_time <= d.end_time)
+                        )
+                    GROUP BY a.label
+                """.format(feature_dir=feature_dir)).fetchall()
         else:
+            if not full_overlap:
+                self.logger.warn("WARNING: Ignoring full_overlap=False in get_label_counts for multiple features.")
             if len(feature_names) > 2:
                 self.logger.warn(f'get_label_counts only supports 2 features; using the first two from {feature_names}')
             base_feature_dir = self.feature_dir(feature_names[0])
@@ -309,7 +349,8 @@ class ParquetFeatureStore(AbstractFeatureStore):
         # This doesn't need to be in parquet.py.
         # Inner join to ignore clips in clip_dataset without any labels.
         return dbcon.execute("""
-            SELECT a.vid,
+            SELECT a.aid as lid, -- match params of LabelInfo
+                a.vid,
                 CASE WHEN c.start_time < a.start_time THEN a.start_time ELSE c.start_time END AS start_time,
                 CASE WHEN c.end_time < a.end_time THEN c.end_time ELSE a.end_time END AS end_time,
                 a.label

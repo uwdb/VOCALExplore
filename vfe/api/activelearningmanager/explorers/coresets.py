@@ -22,7 +22,7 @@ class CoresetsExplorer(AbstractExplorer):
         self._shown_fids = defaultdict(set)
         self._coreset_fids = defaultdict(set)
 
-    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None) -> Iterable[ClipInfo]:
+    def explore(self, feature_names: List[str], featuremanager: AbstractFeatureManager, modelmanager: AbstractModelManager, videomanager: AbstractVideoManager, k, t, label=None, vids=None, step=None) -> Iterable[ClipInfo]:
         self.logger.debug(f'Coresets explore (features {feature_names}) over unlabeled vids with features')
 
         feature_name_str = core.typecheck.ensure_str(feature_names)

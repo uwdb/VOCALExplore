@@ -254,9 +254,13 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         return self.featuremanager.add_video(path, start_time, duration, thumbnail_dir=self.thumbnail_dir)
 
     @logtime
+    def get_missing_thumbnails(self) -> None:
+        self.featuremanager.get_missing_thumbnails(self.thumbnail_dir)
+
+    @logtime
     def add_videos(self, video_csv_path) -> Iterable[VidType]:
         # Expect video_csv_path to have a header of: path,start,duration
-        return self.featuremanager.add_videos(video_csv_path)
+        return self.featuremanager.add_videos(video_csv_path, self.thumbnail_dir)
 
     @logtime
     def get_videos(self, limit=None, thumbnails=False) -> List[List[str]]:
@@ -446,6 +450,8 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         vids = [clip.vid for clip in clips]
         if len(vids):
             predictions: Iterable[PredictionSet] = self._do_get_predictions(feature_names, lambda: self.modelmanager.get_predictions(vids=vids, feature_names=feature_names, allow_stale_predictions=self.eager_model_training, priority=UserPriority.priority))
+            # Predictions may be None if we don't train a model (e.g., if there are too few labels).
+            predictions = predictions or []
         else:
             predictions = []
         clip_predictions = [[] for _ in clips]
@@ -524,9 +530,9 @@ class MultiFeatureActiveLearningManager(AbstractActiveLearningManager):
         feature_names = self._get_best_features()
         self.logger.info(f'explore (feature {feature_names}): k={k}, t={t}, label={label}')
         if label:
-            clips = self.label_explorer.explore(feature_names, self.featuremanager, self.modelmanager, self.videomanager, k, t, label=label, vids=vids)
+            clips = self.label_explorer.explore(feature_names, self.featuremanager, self.modelmanager, self.videomanager, k, t, label=label, vids=vids, step=self.step)
         else:
-            clips = self.explorer.explore(feature_names, self.featuremanager, self.modelmanager, self.videomanager, k, t, label=label, vids=vids)
+            clips = self.explorer.explore(feature_names, self.featuremanager, self.modelmanager, self.videomanager, k, t, label=label, vids=vids, step=self.step)
         if self.return_predictions:
             explore_clips = [self._expand_clip(feature_names, clip, t) for clip in clips]
             clip_predictions = self._predict_clips(feature_names, clips)

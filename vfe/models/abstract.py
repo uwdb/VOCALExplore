@@ -106,6 +106,8 @@ class AbstractStrategy:
 
         self.budgets = [0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 0.75] if budgets is None else budgets
 
+        self.logger = logging.getLogger(__name__)
+
     def train_and_evaluate_pytorch_model(self, X_train, y_train, X_test, y_test, it=0, model_name_suffix='', stratify_test=None, labels=None, device=None, f1_val=0.0):
         return self.train_and_evaluate_pytorch_model_multieval(X_train, y_train, {'test': (X_test, y_test)}, it=it, model_name_suffix=model_name_suffix, stratify_test=stratify_test, labels=labels, device=device, f1_val=f1_val)
 
@@ -207,7 +209,7 @@ class AbstractStrategy:
             default_root_dir=checkpoint_root,
             callbacks=callbacks,
             check_val_every_n_epoch=5,
-            log_every_n_steps=min(50, len(X_train)-1),
+            log_every_n_steps=min(50, max(1, len(X_train)-1)),
             auto_lr_find=self.autolr,
         )
 
@@ -291,11 +293,13 @@ class AbstractStrategy:
             if len(y_pred_probs.shape) == 0:
                 # One value. Add a dimension.
                 y_pred_probs = torch.unsqueeze(y_pred_probs, dim=1)
-                self.logger.debug(f'Before shape: {y_pred_probs_og.shape}; after shape: {y_pred_probs.shape}')
+                self.logger.debug(f'Before shape: {y_pred_probs_og.shape}; after shape: {y_pred_probs.shape} (y.shape: {y.shape})')
             if len(y_pred_probs.shape) == 1:
                 # One class. Add a dimension.
-                y_pred_probs = torch.unsqueeze(y_pred_probs, dim=1)
-                self.logger.debug(f'Before shape: {y_pred_probs_og.shape}; after shape: {y_pred_probs.shape}')
+                # Example: one row with two possible values. Transform from tensor([p1, p2]) to tensor([[p1, p2]]).
+                y_pred_probs = torch.unsqueeze(y_pred_probs, dim=0)
+                self.logger.debug(f'Before shape: {y_pred_probs_og.shape}; after shape: {y_pred_probs.shape} (y.shape: {y.shape})')
+
 
             y_pred = np.argmax(y_pred_probs, axis=1)
 

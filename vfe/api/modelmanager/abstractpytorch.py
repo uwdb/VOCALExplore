@@ -61,6 +61,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         epochs=100,
         batch_size=32,
         learningrate=0.0002,
+        predict_on_none=False
     ):
         self.storagemanager = storagemanager
         self.featuremanager = featuremanager
@@ -77,6 +78,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self.model_type = models.ModelType.LINEAR
         self.learningrate = learningrate
         self.epochs = epochs
+        self.predict_on_none = predict_on_none
 
         self.ignore_labels = set()
 
@@ -84,11 +86,12 @@ class AbstractPytorchModelManager(AbstractModelManager):
         self._feature_to_last_prediction_mid = {}
 
         # Async predictions.
-        # We can't pass the queue to the async function unless it comes from a Manager.
-        self._predictions_queue = self.scheduler.context().Manager().Queue() # Slow; starts a new process.
-        self._prediction_processing_thread = threading.Thread(group=None, target=self._handle_prediction_batch, args=(self._predictions_queue,), name='process-predictions')
-        self._prediction_processing_thread.daemon = True
-        self._prediction_processing_thread.start()
+        if self.scheduler:
+            # We can't pass the queue to the async function unless it comes from a Manager.
+            self._predictions_queue = self.scheduler.context().Manager().Queue() # Slow; starts a new process.
+            self._prediction_processing_thread = threading.Thread(group=None, target=self._handle_prediction_batch, args=(self._predictions_queue,), name='process-predictions')
+            self._prediction_processing_thread.daemon = True
+            self._prediction_processing_thread.start()
 
     def _handle_prediction_batch(self, predictions_queue):
         while True:
@@ -199,7 +202,35 @@ class AbstractPytorchModelManager(AbstractModelManager):
 
         X = np.vstack(labels_and_features['feature'].to_numpy())
         y = labels_and_features['labels'].to_numpy()
-        _, label_counts = np.unique(y, return_counts=True)
+
+        # Split y into multi-labels to handle the case where multiple labels overlap.
+        ordered_labels, to_multilabel = models.to_multilabel_gen((unique_labels))
+        y_transformed = to_multilabel(y)
+        label_counts = np.sum(y_transformed, axis=0)
+
+        # Filter out labels that have fewer than n_splits to avoid 0 f1s.
+        sufficient_labels = np.where(label_counts >= n_splits)[0]
+        ordered_labels = ordered_labels[sufficient_labels]
+        y_transformed_filtered = y_transformed[:, sufficient_labels]
+        # Pick rows with at least one label still.
+        per_vid_labels = np.sum(y_transformed_filtered, axis=1)
+        labeled_videos_idxs = np.where(per_vid_labels > 0)[0]
+        if len(labeled_videos_idxs) < n_splits:
+            logger.warn('Returning without checking label quality because after eliminating labels there are not enough examples')
+            return None
+
+        y_transformed_filtered = y_transformed_filtered[labeled_videos_idxs]
+        y = np.array(['_'.join(ordered_labels[np.where(y_row == 1)]) for y_row in y_transformed_filtered])
+        X = X[labeled_videos_idxs]
+
+        # Not great, but re-add these checks with the filtered X, y.
+        if len(X) <= n_splits \
+                or (len(sufficient_labels) <= n_splits and len(sufficient_labels) > 2): # I don't remember why the l(unique)<nsplits came from. Keep it for now and special-case for bears.
+            return None
+
+        if min_size > 0 and len(X) < min_size:
+            return None
+
         if max(label_counts) < n_splits:
             logger.warn(f'Reducing n_splits from {n_splits} to {max(label_counts)} because not enough examples of each class')
             n_splits = max(label_counts)
@@ -212,14 +243,16 @@ class AbstractPytorchModelManager(AbstractModelManager):
         else:
             kf = model_selection.StratifiedGroupKFold(n_splits=n_splits, shuffle=True, random_state=random_state)
 
-        splits = kf.split(X, y=labels_and_features['labels'].to_numpy(), groups=labels_and_features['vid'].to_numpy())
+        # In multi-label case, we'll pick the first label to stratify on.
+        # splits = kf.split(X, y=np.argmax(y_transformed, axis=1), groups=labels_and_features['vid'].to_numpy())
+        splits = kf.split(X, y=np.argmax(y_transformed_filtered, axis=1), groups=labels_and_features['vid'].to_numpy()[labeled_videos_idxs])
         if keep_first:
             splits = [list(splits)[0]]
         eval_kwds = dict(
             X=X,
             y=y,
             feature_name=core.typecheck.ensure_str(feature_names),
-            unique_labels=unique_labels,
+            unique_labels=ordered_labels,
             model_type=model_type,
             batch_size=batch_size,
             learningrate=learningrate,
@@ -231,7 +264,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
             device=device,
         )
         if return_tasks:
-            return [functools.partial(AbstractPytorchModelManager.eval_splits, [split], **eval_kwds) for split in splits]
+            return [partial(AbstractPytorchModelManager.eval_splits, [split], **eval_kwds) for split in splits]
 
         results = AbstractPytorchModelManager.eval_splits(splits, **eval_kwds)
         return AbstractPytorchModelManager.postprocess_eval_split_results(results)
@@ -248,9 +281,11 @@ class AbstractPytorchModelManager(AbstractModelManager):
         unique_labels = set([l.label for l in all_labels])
         return labels_and_features, unique_labels
 
-    def _train_model(self, feature_names: Union[str, List[str]], save=True, labels=None, train_kwargs={}):
-        labels_and_features, unique_labels = self._get_all_labels_and_features(feature_names)
+    def _train_model(self, feature_names: Union[str, List[str]], save=True, labels=None, train_kwargs={}, vids=None):
+        labels_and_features, unique_labels = self._get_all_labels_and_features(feature_names, vids=vids)
         labeled_vids = self.storagemanager.get_vids_with_labels()
+        if vids is not None:
+            labeled_vids = np.array([l for l in labeled_vids if l in vids])
         self.logger.debug(f'Training model using clips from {len(labeled_vids)} vids. Labels: {unique_labels}')
         self.logger.debug(f'Training set size: {len(labels_and_features)}')
         self.logger.debug(f'Labels in table: {set(labels_and_features["labels"].to_pylist())}')
@@ -364,7 +399,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         except Exception as e:
             logger.exception("Exception: {e}")
 
-    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT, run_async=False):
+    def _predict_model(self, model_info: Union[ModelInfo, Callable[[], ModelInfo]], feature_names: Union[str, List[str]]=None, vids=None, start=None, end=None, ignore_labeled=False, sample_from_validation=-1, priority: Priority=Priority.DEFAULT, run_async=False, cache_predictions=True):
         if vids is not None:
             features = self.featuremanager.get_features(feature_names, np.array(vids), priority=priority)
         else:
@@ -412,6 +447,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         filtered_features_with_predictions = existing_predictions
 
         if run_async:
+            assert self.scheduler, f"Cannot perform asynchronous predictions without a scheduler."
             if not len(filtered_features_for_inference):
                 logger.debug(f'Returning before scheduling predict because no predictions are missing for vids {min(vids)}-{max(vids)}')
                 return
@@ -449,14 +485,25 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = y_pred_probs.squeeze()
             self.logger.debug('Got predictions')
 
-            self.logger.debug(f'Saving predictions for model {model_info.mid}')
-            self.storagemanager.add_predictions(model_info.mid, probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
+            if cache_predictions:
+                self.logger.debug(f'Saving predictions for model {model_info.mid}')
+                self.storagemanager.add_predictions(model_info.mid, probs_to_predictionset(y_pred_probs, model_info.model_labels, filtered_features_for_inference))
         else:
             y_pred_probs = None
 
         # Concatenate y_pred_probs with filtered_features_with_predictions.
-        common_columns = ["vid", "start_time", "end_time"]
+        common_columns = ["fid", "vid", "start_time", "end_time", "labels", "feature"]
         if len(filtered_features_with_predictions):
+            # Do the join first in case things get re-ordered so that the order of
+            # y_pred_probs matches.
+            # Add labels and fid to filtered_featueres_with_predictions.
+            # Otherwise it only has vid, start_time, end_time, and pred_dict.
+            filtered_features_with_predictions = duckdb.connect().execute("""
+                SELECT p.*, ff.labels, ff.fid, ff.feature
+                FROM filtered_features_with_predictions p, filtered_features ff
+                WHERE p.vid=ff.vid AND p.start_time=ff.start_time AND p.end_time=ff.end_time
+            """).arrow()
+
             predictions = [json.loads(preds) for preds in filtered_features_with_predictions['pred_dict'].to_pylist()]
             y_pred_probs_existing = torch.stack([torch.Tensor([pred[label] for label in model_info.model_labels]) for pred in predictions])
             if len(y_pred_probs_existing.size()) > 2:
@@ -466,6 +513,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 y_pred_probs = torch.cat([y_pred_probs, y_pred_probs_existing])
             else:
                 y_pred_probs = y_pred_probs_existing
+
             filtered_features = pa.concat_tables([filtered_features_for_inference.select(common_columns), filtered_features_with_predictions.select(common_columns)])
         else:
             filtered_features = filtered_features_for_inference.select(common_columns)
@@ -473,7 +521,7 @@ class AbstractPytorchModelManager(AbstractModelManager):
         # Now we're returning filtered_features with an extra 'pred_dict' column, but I think all of the callers will just ignore it.
         return y_pred_probs, model_info.model_labels, filtered_features
 
-    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT, run_async=False) -> Union[Iterable[PredictionSet], None]:
+    def _predict_model_for_feature(self, feature_names: Union[str, List[str]], vids, start, end, ignore_labeled=False, priority: Priority=Priority.DEFAULT, run_async=False, cache_predictions=True) -> Union[Iterable[PredictionSet], None]:
         if (start is not None and end is None) or (start is None and end is not None):
             self.logger.warn('_predict_model may not correctly handle case where only one of start/end is None')
 
@@ -490,24 +538,31 @@ class AbstractPytorchModelManager(AbstractModelManager):
                 self._feature_to_last_prediction_mid[feature_name] = model_info.mid
             return model_info
 
-        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async)
+        return self._predict_model(model_info_lambda, feature_names=feature_names, vids=vids, start=start, end=end, ignore_labeled=ignore_labeled, priority=priority, run_async=run_async, cache_predictions=cache_predictions)
 
-    def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1):
+    def _model_perf(self, model_info: ModelInfo, vids, ignore_labels=[], groupby_vid=False, sample_from_validation=-1, include_none=False, cache_predictions=True):
         # Returns dictionary with keys:
         #   nclasses, n_pred, pred_mAP, pred_avgprecision_<class>
         # This is weird ... we should probably just be storing a list of features in the model table.
         # If '+' is in the feature name, we assume it's a combination of features. Otherwise, we assume it's either a string or a list of features.
         feature_names = model_info.feature_name.split('+') if '+' in model_info.feature_name else model_info.feature_name
-        y_pred_probs, model_labels, labels_and_features = self._predict_model(model_info, feature_names=feature_names, vids=vids, sample_from_validation=sample_from_validation)
+        y_pred_probs, model_labels, labels_and_features = self._predict_model(model_info, feature_names=feature_names, vids=vids, sample_from_validation=sample_from_validation, cache_predictions=cache_predictions)
         if y_pred_probs.dim() == 1:
             y_pred_probs = y_pred_probs.unsqueeze(dim=1)
 
         labels = model_info.model_labels
         _, to_multilabel = models.to_multilabel_gen(labels)
         true_labels = labels_and_features['labels'].to_numpy()
-        labeled_idxs = np.where(~np.isin(true_labels, ['none', *ignore_labels]))[0]
+        if not include_none and not self.predict_on_none:
+            if isinstance(ignore_labels, set):
+                ignore_labels.add('none')
+            else:
+                ignore_labels.append('none')
+
+        labeled_idxs = np.where(~np.isin(true_labels, [*ignore_labels]))[0]
         y_true = to_multilabel(true_labels[labeled_idxs])
         y_pred_probs = y_pred_probs[labeled_idxs]
+        true_labels = true_labels[labeled_idxs]
         assert y_pred_probs.shape == y_true.shape, f'{y_pred_probs.shape} != {y_true.shape}'
         _warn_for_unlabeled(self.logger, true_labels[labeled_idxs], '_model_perf')
 
@@ -515,16 +570,18 @@ class AbstractPytorchModelManager(AbstractModelManager):
             # Assert that each vid has one label.
             vids = labels_and_features['vid'].to_numpy()[labeled_idxs]
             groups = pd.Series(true_labels).groupby(vids)
-            if groups.nunique().max() > 1:
+            if False and groups.nunique().max() > 1:
                 self.logger.warn('_model_perf was called with groupby_vid, but some vids have multiple labels. Computing results without grouping.')
             else:
                 y_shape = (len(groups.indices), y_true.shape[1])
                 y_true_grouped = np.zeros(y_shape)
                 y_pred_grouped = torch.zeros(y_shape)
                 for i, (vid, indices) in enumerate(groups.indices.items()):
-                    y_true_grouped[i] = y_true[indices[0]] # All rows will have the same label, so we can pick one.
-                    y_pred_grouped[i] = torch.mean(y_pred_probs[indices], dim=0)
-                y_true = y_true_grouped
+                    # If there are multiple labels for a video, create y_true such that there is a 1 for each one.
+                    y_true_grouped[i] = np.max(y_true[indices], axis=0)
+                    # y_true[indices[0]] # All rows will have the same label, so we can pick one.
+                    y_pred_grouped[i] = torch.max(y_pred_probs[indices], dim=0).values
+                y_true = y_true_grouped.astype(int)
                 y_pred_probs = y_pred_grouped
 
         results = models.AbstractStrategy._results_for_split('pred', y_true, None, y_pred_probs, labels=labels, multilabel_threshold=model_info.f1_threshold)
